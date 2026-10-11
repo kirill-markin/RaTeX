@@ -71,19 +71,21 @@ final class CatalystSmoke: UIResponder, UIApplicationDelegate {
     }
 
     private func assertVisiblePixels(in image: CGImage) throws {
-        var alpha = [UInt8](repeating: 0, count: image.width * image.height)
-        try alpha.withUnsafeMutableBytes { bytes in
+        var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        try pixels.withUnsafeMutableBytes { bytes in
             guard let context = CGContext(
                 data: bytes.baseAddress,
                 width: image.width,
                 height: image.height,
                 bitsPerComponent: 8,
-                bytesPerRow: image.width,
-                space: nil,
-                bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+                bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
             ) else { throw SmokeFailure.missingRenderedImage }
             context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
         }
-        guard alpha.contains(where: { $0 > 0 }) else { throw SmokeFailure.blankRenderedImage }
+        guard stride(from: 3, to: pixels.count, by: 4).contains(where: { pixels[$0] > 0 }) else {
+            throw SmokeFailure.blankRenderedImage
+        }
     }
 }
