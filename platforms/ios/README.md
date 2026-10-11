@@ -61,6 +61,7 @@ Install Rust Apple targets once:
 ```bash
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 ```
 
 ---
@@ -73,7 +74,20 @@ From the repo root:
 bash scripts/build-apple-xcframework.sh
 ```
 
-This produces `platforms/ios/RaTeX.xcframework` with **iOS** and **macOS** slices.
+This produces `platforms/ios/RaTeX.xcframework` with iOS device, iOS simulator,
+macOS and Mac Catalyst slices. Simulator, macOS and Catalyst each contain arm64
+and x86_64; the device slice contains arm64. Catalyst uses Rust's official
+[macabi targets](https://doc.rust-lang.org/rustc/platform-support/apple-ios-macabi.html)
+and the macOS SDK, with an iOS 14.0 deployment target. `--ios` and `--macos` retain
+their platform-only behavior.
+
+The fork's [Catalyst XCFramework workflow](../../.github/workflows/catalyst-build.yml)
+builds and verifies all slices, compiles the unchanged UIKit wrapper for both
+Catalyst architectures through a temporary local Swift package, and runs a
+bundled formula smoke on the runner's native architecture. Its artifact contains
+`RaTeX.xcframework.zip`, the SHA-256 file, and source SHA/run/toolchain provenance.
+It does not publish releases or change `Package.swift`; preserve the successful
+main-run artifact in an immutable binary release before pinning consumers to it.
 
 For an iOS-only local artifact, use the compatibility wrapper:
 

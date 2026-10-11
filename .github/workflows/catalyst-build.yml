@@ -1,0 +1,82 @@
+name: Catalyst XCFramework
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/catalyst-build.yml
+      - scripts/build-apple-xcframework.sh
+      - scripts/verify-xcframework-slices.sh
+      - scripts/smoke-catalyst-integration.sh
+      - platforms/ios/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/catalyst-build.yml
+      - scripts/build-apple-xcframework.sh
+      - scripts/verify-xcframework-slices.sh
+      - scripts/smoke-catalyst-integration.sh
+      - platforms/ios/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalyst-build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,
+            aarch64-apple-darwin,x86_64-apple-darwin,
+            aarch64-apple-ios-macabi,x86_64-apple-ios-macabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Build all Apple slices
+        run: bash scripts/build-apple-xcframework.sh
+      - name: Verify device, simulator, macOS and Catalyst slices
+        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
+      - name: Build universal UIKit wrapper and run Catalyst formula smoke
+        run: bash scripts/smoke-catalyst-integration.sh
+      - name: Package verified binary and provenance
+        run: |
+          mkdir -p artifacts
+          ditto -c -k --keepParent platforms/ios/RaTeX.xcframework artifacts/RaTeX.xcframework.zip
+          (cd artifacts && shasum -a 256 RaTeX.xcframework.zip > RaTeX.xcframework.zip.sha256)
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          archive = Path("artifacts/RaTeX.xcframework.zip")
+          provenance = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "ref": os.environ["GITHUB_REF"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "run_url": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+              "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+              "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+              "xcode": subprocess.check_output(["xcodebuild", "-version"], text=True).strip(),
+          }
+          Path("artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ratex-apple-xcframework-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
