@@ -101,7 +101,7 @@ xcodebuild -project "$SMOKE_DIR/CatalystSmoke.xcodeproj" -scheme CatalystSmoke \
 
 APP="$SMOKE_DIR/DerivedData/Build/Products/Release-maccatalyst/CatalystSmoke.app"
 BINARY="$APP/Contents/MacOS/CatalystSmoke"
-lipo -verify_arch arm64 x86_64 "$BINARY"
+lipo "$BINARY" -verify_arch arm64 x86_64
 codesign --force --sign - "$APP"
 python3 - "$BINARY" <<'PY'
 import subprocess
