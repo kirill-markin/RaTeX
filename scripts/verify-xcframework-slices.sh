@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# verify-xcframework-slices.sh — fail if required platform slices are missing.
-#
-# Usage:
-#   ./scripts/verify-xcframework-slices.sh <xcframework-path> ios macos
 
 set -euo pipefail
 
@@ -38,7 +34,13 @@ with info_plist.open("rb") as f:
     data = plistlib.load(f)
 
 libs = data.get("AvailableLibraries", [])
-present = sorted({lib.get("SupportedPlatform") for lib in libs if lib.get("SupportedPlatform")})
+def platform_group(lib):
+    platform = lib.get("SupportedPlatform")
+    if platform == "ios" and lib.get("SupportedPlatformVariant") == "maccatalyst":
+        return "maccatalyst"
+    return platform
+
+present = sorted({platform_group(lib) for lib in libs if platform_group(lib)})
 missing = [platform for platform in required if platform not in present]
 
 print(f"Present platforms: {', '.join(present) if present else '(none)'}")
@@ -65,10 +67,6 @@ def arch_union(entries):
         result.update(item.get("SupportedArchitectures", []))
     return result
 
-# Enforce iOS release-grade slices:
-# - one device slice (no variant)
-# - one simulator slice (variant=simulator)
-# - key architectures present
 if "ios" in required:
     ios_device = list(matches("ios", None))
     ios_sim = list(matches("ios", "simulator"))
@@ -92,11 +90,8 @@ if "ios" in required:
     print(f"iOS device architectures: {sorted(ios_device_arch)}")
     print(f"iOS simulator architectures: {sorted(ios_sim_arch)}")
 
-# Enforce macOS release-grade slices:
-# - at least one macOS slice
-# - union must contain arm64 + x86_64
 if "macos" in required:
-    mac_entries = [lib for lib in libs if lib.get("SupportedPlatform") == "macos"]
+    mac_entries = list(matches("macos", None))
     if not mac_entries:
         print("::error::Missing macOS slice (SupportedPlatform=macos).")
         sys.exit(1)
@@ -106,6 +101,15 @@ if "macos" in required:
             print(f"::error::macOS slice missing {arch}. Found: {sorted(mac_arch)}")
             sys.exit(1)
     print(f"macOS architectures: {sorted(mac_arch)}")
+
+if "maccatalyst" in required:
+    catalyst_entries = list(matches("ios", "maccatalyst"))
+    catalyst_arch = arch_union(catalyst_entries)
+    for arch in ("arm64", "x86_64"):
+        if arch not in catalyst_arch:
+            print(f"::error::Mac Catalyst slice missing {arch}. Found: {sorted(catalyst_arch)}")
+            sys.exit(1)
+    print(f"Mac Catalyst architectures: {sorted(catalyst_arch)}")
 
 print("XCFramework platform slice check passed.")
 PY

@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
-# build-apple-xcframework.sh — Build RaTeX.xcframework for iOS + macOS
-#
-# Prerequisites:
-#   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-#   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-#   Xcode command-line tools installed
-#
-# Output: platforms/ios/RaTeX.xcframework  (iOS + macOS combined)
-#
-# Usage:
-#   ./scripts/build-apple-xcframework.sh          # build all (iOS + macOS)
-#   ./scripts/build-apple-xcframework.sh --ios     # iOS only
-#   ./scripts/build-apple-xcframework.sh --macos   # macOS only
 
 set -euo pipefail
 
 cleanup() {
   if [[ -n "${SIM_DIR-}" && -d "$SIM_DIR" ]]; then rm -rf "$SIM_DIR"; fi
   if [[ -n "${MAC_DIR-}" && -d "$MAC_DIR" ]]; then rm -rf "$MAC_DIR"; fi
+  if [[ -n "${CATALYST_DIR-}" && -d "$CATALYST_DIR" ]]; then rm -rf "$CATALYST_DIR"; fi
 }
 trap cleanup EXIT
 
@@ -26,6 +14,7 @@ HEADER_DIR="$REPO_ROOT/crates/ratex-ffi/include"
 OUTPUT="$REPO_ROOT/platforms/ios/RaTeX.xcframework"
 BUILD_IOS=true
 BUILD_MACOS=true
+BUILD_CATALYST=true
 # Controls missing-target behavior:
 # - auto (default): auto-install locally, fail in CI
 # - true: always auto-install
@@ -34,8 +23,8 @@ AUTO_INSTALL_RUST_TARGETS="${RATEX_AUTO_INSTALL_RUST_TARGETS:-auto}"
 
 for arg in "$@"; do
   case $arg in
-    --ios)   BUILD_MACOS=false ;;
-    --macos) BUILD_IOS=false ;;
+    --ios)   BUILD_MACOS=false; BUILD_CATALYST=false ;;
+    --macos) BUILD_IOS=false; BUILD_CATALYST=false ;;
   esac
 done
 
@@ -79,11 +68,11 @@ $target
   exit 1
 }
 
-# ---------------------------------------------------------------------------
-# iOS
-# ---------------------------------------------------------------------------
 if $BUILD_IOS; then
   echo "==> Building ratex-ffi for iOS targets..."
+  ensure_rust_target_installed aarch64-apple-ios
+  ensure_rust_target_installed aarch64-apple-ios-sim
+  ensure_rust_target_installed x86_64-apple-ios
   cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
       --target aarch64-apple-ios
   cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
@@ -102,9 +91,6 @@ if $BUILD_IOS; then
   LIBS+=(-library "$SIM_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
 fi
 
-# ---------------------------------------------------------------------------
-# macOS
-# ---------------------------------------------------------------------------
 if $BUILD_MACOS; then
   echo "==> Building ratex-ffi for macOS targets..."
 
@@ -126,9 +112,28 @@ if $BUILD_MACOS; then
   LIBS+=(-library "$MAC_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
 fi
 
-# ---------------------------------------------------------------------------
-# Package XCFramework
-# ---------------------------------------------------------------------------
+if $BUILD_CATALYST; then
+  echo "==> Building ratex-ffi for Mac Catalyst targets..."
+  ensure_rust_target_installed aarch64-apple-ios-macabi
+  ensure_rust_target_installed x86_64-apple-ios-macabi
+
+  CATALYST_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+  for target in aarch64-apple-ios-macabi x86_64-apple-ios-macabi; do
+    SDKROOT="$CATALYST_SDK" IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+      cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
+      --target "$target"
+  done
+
+  echo "==> Creating fat Mac Catalyst binary..."
+  CATALYST_DIR=$(mktemp -d)
+  lipo -create \
+      "$REPO_ROOT/target/aarch64-apple-ios-macabi/release/libratex_ffi.a" \
+      "$REPO_ROOT/target/x86_64-apple-ios-macabi/release/libratex_ffi.a" \
+      -output "$CATALYST_DIR/libratex_ffi.a"
+
+  LIBS+=(-library "$CATALYST_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
+fi
+
 echo "==> Packaging XCFramework..."
 rm -rf "$OUTPUT"
 xcodebuild -create-xcframework "${LIBS[@]}" -output "$OUTPUT"
