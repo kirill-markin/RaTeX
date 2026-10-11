@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - Package.swift
       - .github/workflows/catalyst-build.yml
       - scripts/build-apple-xcframework.sh
       - scripts/verify-xcframework-slices.sh
@@ -15,6 +16,7 @@ on:
   push:
     branches: [main]
     paths:
+      - Package.swift
       - .github/workflows/catalyst-build.yml
       - scripts/build-apple-xcframework.sh
       - scripts/verify-xcframework-slices.sh
