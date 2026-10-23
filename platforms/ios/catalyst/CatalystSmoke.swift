@@ -13,6 +13,7 @@ private enum SmokeFailure: Error {
     case missingRenderedImage
     case blankRenderedImage
     case missingBundledFont
+    case incorrectFontRegistrationStatus
 }
 
 @main
@@ -50,6 +51,10 @@ final class CatalystSmoke: UIResponder, UIApplicationDelegate {
         let actualFontName = CTFontCopyPostScriptName(font) as String
         guard actualFontName == fontName else {
             throw SmokeFailure.missingBundledFont
+        }
+        guard RaTeXFontLoader.isFontRegistered(fontName),
+              !RaTeXFontLoader.isFontRegistered("RaTeXSmoke-NonexistentFont") else {
+            throw SmokeFailure.incorrectFontRegistrationStatus
         }
         let view = RaTeXView(frame: .zero)
         let _: UIView = view

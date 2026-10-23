@@ -25,6 +25,13 @@ jobs:
             aarch64-apple-darwin,
             x86_64-apple-darwin
 
+      - name: Install Apple Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+          rustup target add --toolchain nightly-2026-08-16 \
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+            aarch64-apple-ios-macabi x86_64-apple-ios-macabi
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
@@ -32,7 +39,7 @@ jobs:
         run: bash scripts/build-apple-xcframework.sh
 
       - name: Verify XCFramework platform slices
-        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos
+        run: bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
 
       # Zip the XCFramework — SPM requires a zip for remote binary targets
       - name: Package XCFramework

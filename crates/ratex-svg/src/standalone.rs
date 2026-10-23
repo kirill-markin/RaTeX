@@ -1,31 +1,117 @@
 //! Glyph outlines as SVG `<path>` via `ab_glyph` (feature `standalone`).
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
-use ab_glyph::{Font, FontRef, OutlineCurve};
+use ab_glyph::{Font, FontRef, FontVec, OutlineCurve};
 use ratex_font::FontId;
-use ratex_font_loader::FontSet;
+use ratex_font_loader::{OutlineSourceId, ParsedFontSet, SystemFontResolver};
 
-fn sfnt_collection_index(id: FontId) -> u32 {
-    match id {
-        FontId::EmojiFallback => ratex_unicode_font::emoji_font_face_index().unwrap_or(0),
-        FontId::CjkRegular => ratex_unicode_font::unicode_font_face_index().unwrap_or(0),
-        FontId::CjkFallback => ratex_unicode_font::fallback_font_face_index().unwrap_or(0),
-        _ => 0,
+pub(crate) enum SvgFont<'a> {
+    Parsed(&'a FontVec),
+    Raw(Box<LazyRawFont<'a>>),
+    System(&'a FontRef<'static>),
+}
+
+pub(crate) struct LazyRawFont<'a> {
+    bytes: &'a [u8],
+    face_index: u32,
+    parsed: OnceCell<Result<FontRef<'a>, ab_glyph::InvalidFont>>,
+}
+
+impl<'a> LazyRawFont<'a> {
+    fn get(&self) -> Option<&FontRef<'a>> {
+        self.parsed
+            .get_or_init(|| FontRef::try_from_slice_and_index(self.bytes, self.face_index))
+            .as_ref()
+            .ok()
     }
 }
 
-/// Build a `FontId → FontRef` map from the cached raw data (held alive by `guard`).
-pub(crate) fn build_font_refs<'a>(
-    data: &'a FontSet,
-) -> Result<HashMap<FontId, FontRef<'a>>, String> {
-    let mut font_refs = HashMap::new();
-    for (id, bytes) in data.iter() {
-        let font = FontRef::try_from_slice_and_index(bytes, sfnt_collection_index(*id))
-            .map_err(|e| format!("Failed to parse font {:?}: {}", id, e))?;
-        font_refs.insert(*id, font);
+impl SvgFont<'_> {
+    fn glyph_id(&self, ch: char) -> ab_glyph::GlyphId {
+        match self {
+            Self::Parsed(font) => font.glyph_id(ch),
+            Self::Raw(raw) => raw
+                .get()
+                .map_or(ab_glyph::GlyphId(0), |font| font.glyph_id(ch)),
+            Self::System(font) => font.glyph_id(ch),
+        }
     }
-    Ok(font_refs)
+
+    fn units_per_em(&self) -> Option<f32> {
+        match self {
+            Self::Parsed(font) => font.units_per_em(),
+            Self::Raw(raw) => raw.get().and_then(Font::units_per_em),
+            Self::System(font) => font.units_per_em(),
+        }
+    }
+
+    fn h_advance_unscaled(&self, glyph_id: ab_glyph::GlyphId) -> f32 {
+        match self {
+            Self::Parsed(font) => font.h_advance_unscaled(glyph_id),
+            Self::Raw(raw) => raw
+                .get()
+                .map_or(0.0, |font| font.h_advance_unscaled(glyph_id)),
+            Self::System(font) => font.h_advance_unscaled(glyph_id),
+        }
+    }
+
+    fn cached_outline(
+        &self,
+        font_id: FontId,
+        source_id: OutlineSourceId,
+        glyph_id: ab_glyph::GlyphId,
+    ) -> Option<std::sync::Arc<[OutlineCurve]>> {
+        match self {
+            Self::Parsed(font) => ratex_font_loader::outline_cache::get_or_compute_outline_fontvec(
+                font_id, font, source_id, glyph_id,
+            ),
+            Self::Raw(raw) => raw.get().and_then(|font| {
+                ratex_font_loader::outline_cache::get_or_compute_outline_with_source_id(
+                    font_id, font, source_id, glyph_id,
+                )
+            }),
+            Self::System(font) => {
+                ratex_font_loader::outline_cache::get_or_compute_outline_with_source_id(
+                    font_id, font, source_id, glyph_id,
+                )
+            }
+        }
+    }
+}
+
+pub(crate) struct SvgFontRef<'a> {
+    font: SvgFont<'a>,
+    source_id: OutlineSourceId,
+}
+
+/// Build a map combining cached small `FontVec`s with borrowed raw large fonts.
+pub(crate) fn build_font_refs(data: &ParsedFontSet) -> HashMap<FontId, SvgFontRef<'_>> {
+    let mut refs = HashMap::new();
+    for (id, font, source_id) in data.iter_with_source() {
+        refs.insert(
+            *id,
+            SvgFontRef {
+                font: SvgFont::Parsed(font),
+                source_id,
+            },
+        );
+    }
+    for (id, bytes, source_id) in data.iter_raw_with_source() {
+        refs.insert(
+            *id,
+            SvgFontRef {
+                font: SvgFont::Raw(Box::new(LazyRawFont {
+                    bytes,
+                    face_index: ratex_font_loader::font_face_index(*id),
+                    parsed: OnceCell::new(),
+                })),
+                source_id,
+            },
+        );
+    }
+    refs
 }
 
 /// Vector path or color-emoji raster (`sbix` PNG as `data:image/png`), matching `ratex-render::render_glyph`.
@@ -49,59 +135,145 @@ pub(crate) fn standalone_glyph(
     glyph_em: f32,
     font_name: &str,
     char_code: u32,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, SvgFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
 ) -> Option<StandaloneGlyph> {
     let font_id = FontId::parse(font_name).unwrap_or(FontId::MainRegular);
-    let font = match font_cache.get(&font_id) {
-        Some(f) => f,
+    let font_entry = match font_cache.get(&font_id) {
+        Some(entry) => entry,
         None => font_cache.get(&FontId::MainRegular)?,
     };
+    let font = &font_entry.font;
 
     let ch = ratex_font::katex_ttf_glyph_char(font_id, char_code);
     let glyph_id = font.glyph_id(ch);
 
     if glyph_id.0 == 0 {
-        return try_system_unicode_fallback_svg(px, py, glyph_em, ch, font_cache, false);
+        return try_system_unicode_fallback_svg(
+            px,
+            py,
+            glyph_em,
+            ch,
+            font_cache,
+            system_fonts,
+            false,
+        );
     }
 
     if font_id == FontId::EmojiFallback {
-        return try_emoji_raster_or_vector_svg(px, py, glyph_em, ch, font, glyph_id);
+        return try_emoji_raster_or_vector_svg(
+            px,
+            py,
+            glyph_em,
+            ch,
+            font_entry.source_id,
+            font,
+            glyph_id,
+        );
     }
 
     if font_id == FontId::CjkRegular {
-        if let Some(d) = outline_to_d(px, py, glyph_em, FontId::CjkRegular, font, glyph_id) {
+        if let Some(d) = outline_to_d(
+            px,
+            py,
+            glyph_em,
+            FontId::CjkRegular,
+            font_entry.source_id,
+            font,
+            glyph_id,
+        ) {
             return Some(StandaloneGlyph::Path(d));
         }
-        if let Some(g) = try_emoji_raster_then_vector_svg(px, py, glyph_em, ch, font_cache) {
+        if let Some(g) =
+            try_emoji_raster_then_vector_svg(px, py, glyph_em, ch, font_cache, system_fonts)
+        {
             return Some(g);
         }
-        if let Some(fb) = font_cache.get(&FontId::CjkFallback) {
-            let fid = fb.glyph_id(ch);
-            if fid.0 != 0 {
-                return outline_to_d(px, py, glyph_em, FontId::CjkFallback, fb, fid)
-                    .map(StandaloneGlyph::Path);
-            }
-        }
-        return None;
+        return outline_char_with_system_fallback(
+            px,
+            py,
+            glyph_em,
+            ch,
+            FontId::CjkFallback,
+            font_cache,
+            system_fonts,
+        );
     }
 
     if font_id == FontId::CjkFallback {
-        if let Some(d) = outline_to_d(px, py, glyph_em, FontId::CjkFallback, font, glyph_id) {
+        if let Some(d) = outline_to_d(
+            px,
+            py,
+            glyph_em,
+            FontId::CjkFallback,
+            font_entry.source_id,
+            font,
+            glyph_id,
+        ) {
             return Some(StandaloneGlyph::Path(d));
         }
-        return try_emoji_raster_then_vector_svg(px, py, glyph_em, ch, font_cache);
+        return try_emoji_raster_then_vector_svg(px, py, glyph_em, ch, font_cache, system_fonts);
     }
 
-    if let Some(d) = outline_to_d(px, py, glyph_em, font_id, font, glyph_id) {
+    if let Some(d) = outline_to_d(
+        px,
+        py,
+        glyph_em,
+        font_id,
+        font_entry.source_id,
+        font,
+        glyph_id,
+    ) {
         return Some(StandaloneGlyph::Path(d));
     }
 
     let skip_main = font_id == FontId::MainRegular;
-    try_system_unicode_fallback_svg(px, py, glyph_em, ch, font_cache, skip_main)
+    try_system_unicode_fallback_svg(px, py, glyph_em, ch, font_cache, system_fonts, skip_main)
+}
+
+fn outline_char_with_entry(
+    px: f32,
+    py: f32,
+    em: f32,
+    ch: char,
+    font_id: FontId,
+    entry: &SvgFontRef<'_>,
+) -> Option<StandaloneGlyph> {
+    let glyph_id = entry.font.glyph_id(ch);
+    if glyph_id.0 == 0 {
+        return None;
+    }
+    outline_to_d(px, py, em, font_id, entry.source_id, &entry.font, glyph_id)
+        .map(StandaloneGlyph::Path)
+}
+
+fn outline_char_with_system_fallback(
+    px: f32,
+    py: f32,
+    em: f32,
+    ch: char,
+    font_id: FontId,
+    font_cache: &HashMap<FontId, SvgFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
+) -> Option<StandaloneGlyph> {
+    if let Some(entry) = font_cache.get(&font_id) {
+        return outline_char_with_entry(px, py, em, ch, font_id, entry);
+    }
+
+    let resolved = system_fonts.get(font_id).ok().flatten()?;
+    let entry = SvgFontRef {
+        font: SvgFont::System(resolved.font()),
+        source_id: resolved.source_id(),
+    };
+    outline_char_with_entry(px, py, em, ch, font_id, &entry)
 }
 
 fn try_emoji_png_data_url(px: f32, py: f32, em: f32, ch: char) -> Option<StandaloneGlyph> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    if !ratex_unicode_font::is_emoji_candidate(ch) {
+        return None;
+    }
 
     #[cfg(target_os = "macos")]
     let request_em = em * 2.0;
@@ -135,81 +307,125 @@ fn try_emoji_raster_then_vector_svg(
     py: f32,
     em: f32,
     ch: char,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, SvgFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
 ) -> Option<StandaloneGlyph> {
+    if !ratex_unicode_font::is_emoji_candidate(ch) {
+        return None;
+    }
     if let Some(img) = try_emoji_png_data_url(px, py, em, ch) {
         return Some(img);
     }
-    let emoji_font = font_cache.get(&FontId::EmojiFallback)?;
-    let eid = emoji_font.glyph_id(ch);
-    if eid.0 == 0 {
-        return None;
-    }
-    outline_to_d(px, py, em, FontId::EmojiFallback, emoji_font, eid).map(StandaloneGlyph::Path)
+    outline_char_with_system_fallback(
+        px,
+        py,
+        em,
+        ch,
+        FontId::EmojiFallback,
+        font_cache,
+        system_fonts,
+    )
 }
-
 fn try_emoji_raster_or_vector_svg(
     px: f32,
     py: f32,
     em: f32,
     ch: char,
-    font: &FontRef<'_>,
+    source_id: OutlineSourceId,
+    font: &SvgFont<'_>,
     glyph_id: ab_glyph::GlyphId,
 ) -> Option<StandaloneGlyph> {
     if let Some(img) = try_emoji_png_data_url(px, py, em, ch) {
         return Some(img);
     }
-    outline_to_d(px, py, em, FontId::EmojiFallback, font, glyph_id).map(StandaloneGlyph::Path)
+    outline_to_d(px, py, em, FontId::EmojiFallback, source_id, font, glyph_id)
+        .map(StandaloneGlyph::Path)
 }
-
 fn try_system_unicode_fallback_svg(
     px: f32,
     py: f32,
     em: f32,
     ch: char,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, SvgFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
     skip_main_regular: bool,
 ) -> Option<StandaloneGlyph> {
     if !skip_main_regular {
         if let Some(fallback) = font_cache.get(&FontId::MainRegular) {
-            let fid = fallback.glyph_id(ch);
+            let fid = fallback.font.glyph_id(ch);
             if fid.0 != 0 {
-                if let Some(d) = outline_to_d(px, py, em, FontId::MainRegular, fallback, fid) {
+                if let Some(d) = outline_to_d(
+                    px,
+                    py,
+                    em,
+                    FontId::MainRegular,
+                    fallback.source_id,
+                    &fallback.font,
+                    fid,
+                ) {
                     return Some(StandaloneGlyph::Path(d));
                 }
             }
         }
     }
-    if let Some(cjk) = font_cache.get(&FontId::CjkRegular) {
-        let cid = cjk.glyph_id(ch);
-        if cid.0 != 0 {
-            if let Some(d) = outline_to_d(px, py, em, FontId::CjkRegular, cjk, cid) {
-                return Some(StandaloneGlyph::Path(d));
-            }
-        }
+    if let Some(glyph) = outline_char_with_system_fallback(
+        px,
+        py,
+        em,
+        ch,
+        FontId::CjkRegular,
+        font_cache,
+        system_fonts,
+    ) {
+        return Some(glyph);
     }
-    if let Some(g) = try_emoji_raster_then_vector_svg(px, py, em, ch, font_cache) {
+    if let Some(g) = try_emoji_raster_then_vector_svg(px, py, em, ch, font_cache, system_fonts) {
         return Some(g);
     }
-    if let Some(fb) = font_cache.get(&FontId::CjkFallback) {
-        let fid = fb.glyph_id(ch);
-        if fid.0 != 0 {
-            return outline_to_d(px, py, em, FontId::CjkFallback, fb, fid)
-                .map(StandaloneGlyph::Path);
-        }
-    }
-    None
+    outline_char_with_system_fallback(
+        px,
+        py,
+        em,
+        ch,
+        FontId::CjkFallback,
+        font_cache,
+        system_fonts,
+    )
 }
-
 fn outline_to_d(
     px: f32,
     py: f32,
     em: f32,
     font_id: FontId,
-    font: &FontRef<'_>,
+    source_id: OutlineSourceId,
+    font: &SvgFont<'_>,
     glyph_id: ab_glyph::GlyphId,
 ) -> Option<String> {
-    let curves = ratex_font_loader::outline_cache::get_or_compute_outline(font_id, font, glyph_id)?;
+    let mut d = String::with_capacity(256);
+    if outline_to_d_into(&mut d, px, py, em, font_id, source_id, font, glyph_id) {
+        Some(d)
+    } else {
+        None
+    }
+}
+
+/// Append the glyph outline as SVG path data to `out`, returning whether any
+/// command was written. Equivalent to the legacy `outline_to_d` (which trimmed
+/// the result and returned `None` for empty output).
+#[allow(clippy::too_many_arguments)]
+fn outline_to_d_into(
+    out: &mut String,
+    px: f32,
+    py: f32,
+    em: f32,
+    font_id: FontId,
+    source_id: OutlineSourceId,
+    font: &SvgFont<'_>,
+    glyph_id: ab_glyph::GlyphId,
+) -> bool {
+    let Some(curves) = font.cached_outline(font_id, source_id, glyph_id) else {
+        return false;
+    };
     let units_per_em = font.units_per_em().unwrap_or(1000.0);
     let mut scale = em / units_per_em;
 
@@ -224,7 +440,7 @@ fn outline_to_d(
         }
     }
 
-    let mut d = String::new();
+    let start_len = out.len();
     let mut last_end: Option<(f32, f32)> = None;
 
     for curve in curves.iter() {
@@ -259,55 +475,49 @@ fn outline_to_d(
 
         if need_move {
             if last_end.is_some() {
-                d.push('Z');
-                d.push(' ');
+                out.push('Z');
+                out.push(' ');
             }
-            use std::fmt::Write;
-            let _ = write!(
-                &mut d,
-                "M{} {}",
-                super::fmt_num(start.0 as f64),
-                super::fmt_num(start.1 as f64)
-            );
-            d.push(' ');
+            out.push('M');
+            crate::fmt_num_to(out, start.0 as f64);
+            out.push(' ');
+            crate::fmt_num_to(out, start.1 as f64);
+            out.push(' ');
         }
 
         match curve {
             OutlineCurve::Line(_, p1) => {
-                use std::fmt::Write;
-                let _ = write!(
-                    &mut d,
-                    "L{} {}",
-                    super::fmt_num((px + p1.x * scale) as f64),
-                    super::fmt_num((py - p1.y * scale) as f64)
-                );
-                d.push(' ');
+                out.push('L');
+                crate::fmt_num_to(out, (px + p1.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p1.y * scale) as f64);
+                out.push(' ');
             }
             OutlineCurve::Quad(_, p1, p2) => {
-                use std::fmt::Write;
-                let _ = write!(
-                    &mut d,
-                    "Q{} {} {} {}",
-                    super::fmt_num((px + p1.x * scale) as f64),
-                    super::fmt_num((py - p1.y * scale) as f64),
-                    super::fmt_num((px + p2.x * scale) as f64),
-                    super::fmt_num((py - p2.y * scale) as f64)
-                );
-                d.push(' ');
+                out.push('Q');
+                crate::fmt_num_to(out, (px + p1.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p1.y * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (px + p2.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p2.y * scale) as f64);
+                out.push(' ');
             }
             OutlineCurve::Cubic(_, p1, p2, p3) => {
-                use std::fmt::Write;
-                let _ = write!(
-                    &mut d,
-                    "C{} {} {} {} {} {}",
-                    super::fmt_num((px + p1.x * scale) as f64),
-                    super::fmt_num((py - p1.y * scale) as f64),
-                    super::fmt_num((px + p2.x * scale) as f64),
-                    super::fmt_num((py - p2.y * scale) as f64),
-                    super::fmt_num((px + p3.x * scale) as f64),
-                    super::fmt_num((py - p3.y * scale) as f64)
-                );
-                d.push(' ');
+                out.push('C');
+                crate::fmt_num_to(out, (px + p1.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p1.y * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (px + p2.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p2.y * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (px + p3.x * scale) as f64);
+                out.push(' ');
+                crate::fmt_num_to(out, (py - p3.y * scale) as f64);
+                out.push(' ');
             }
         }
 
@@ -315,13 +525,15 @@ fn outline_to_d(
     }
 
     if last_end.is_some() {
-        d.push('Z');
+        out.push('Z');
     }
 
-    let d = d.trim().to_string();
-    if d.is_empty() {
-        None
-    } else {
-        Some(d)
+    // `d.trim()`: no leading whitespace is ever written, so this is trim-end.
+    let bytes = out.as_bytes();
+    let mut end = out.len();
+    while end > start_len && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
     }
+    out.truncate(end);
+    end > start_len
 }

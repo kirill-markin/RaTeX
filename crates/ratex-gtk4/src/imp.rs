@@ -8,7 +8,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk4 as gtk;
 use ratex_cairo::{measure_display_list, render_to_cairo, CairoOptions, RenderMetrics};
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parse;
 use ratex_types::{Color, DisplayList, MathStyle};
 
@@ -368,6 +368,7 @@ fn layout_display_list(
         .with_style(style)
         .with_color(default_color);
     let layout_box = layout(&ast, &layout_options);
+    validate_layout(&layout_box)?;
     Ok(to_display_list(&layout_box))
 }
 

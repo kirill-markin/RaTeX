@@ -3,7 +3,7 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 use ratex_layout::to_display_list;
-use ratex_layout::{layout, LayoutOptions};
+use ratex_layout::{layout, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use ratex_render::{render_to_png, RenderOptions};
 use ratex_types::color::Color;
@@ -47,6 +47,13 @@ fn main() {
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(40.0);
 
+    let padding = args
+        .iter()
+        .position(|a| a == "--padding")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(10.0);
+
     let color = args
         .iter()
         .position(|a| a == "--color")
@@ -81,7 +88,7 @@ fn main() {
 
     let options = RenderOptions {
         font_size,
-        padding: 10.0,
+        padding,
         background_color,
         font_dir,
         device_pixel_ratio,
@@ -145,6 +152,7 @@ fn render_formula(
 ) -> Result<Vec<u8>, String> {
     let ast = parse(expr).map_err(|e| format!("Parse error: {}", e))?;
     let lbox = layout(&ast, layout_opts);
+    validate_layout(&lbox)?;
     let display_list = to_display_list(&lbox);
     render_to_png(&display_list, render_opts)
 }
@@ -204,6 +212,7 @@ Options:
 {font_dir_option}  --output-dir <DIR>                Write PNGs to this directory [default: output]
   --dpr <FACTOR>                    Render scale factor [default: 1.0]
   --font-size <SIZE>                Base font size in pixels [default: 40.0]
+  --padding <SIZE>                  Base padding on each side in pixels [default: 10.0]
   --color <COLOR>                   Formula color: named, #rgb, #rgba, #rrggbb,
                                     #rrggbbaa, or [MODEL]value
                                     [default: black]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use ab_glyph::{Font, FontRef, OutlineCurve};
 use ratex_font::FontId;
-use ratex_font_loader::FontSet;
+use ratex_font_loader::{FontSet, OutlineSourceId, SystemFontResolver};
 use ratex_types::{Color, DisplayItem, DisplayList, PathCommand};
 use thiserror::Error;
 
@@ -63,9 +63,10 @@ pub fn render_to_cairo(
         .as_deref()
         .and_then(Path::to_str)
         .unwrap_or("");
-    let fonts = ratex_font_loader::load_fonts_for_items(font_dir, &display_list.items)
+    let fonts = ratex_font_loader::load_fonts_for_items_lazy(font_dir, &display_list.items)
         .map_err(CairoError::Font)?;
     let font_refs = build_font_refs(&fonts).map_err(CairoError::Font)?;
+    let system_fonts = SystemFontResolver::new();
 
     let em = options.font_size as f32;
     let pad = options.padding as f32;
@@ -94,6 +95,7 @@ pub fn render_to_cairo(
                     *char_code,
                     *color,
                     &font_refs,
+                    &system_fonts,
                     *scale as f32 * em,
                 )?;
             }
@@ -148,12 +150,18 @@ pub fn render_to_cairo(
     Ok(())
 }
 
-fn build_font_refs(data: &FontSet) -> Result<HashMap<FontId, FontRef<'_>>, String> {
+#[derive(Clone)]
+struct CairoFontRef<'a> {
+    font: FontRef<'a>,
+    source_id: OutlineSourceId,
+}
+
+fn build_font_refs(data: &FontSet) -> Result<HashMap<FontId, CairoFontRef<'_>>, String> {
     let mut font_refs = HashMap::new();
-    for (id, bytes) in data.iter() {
+    for (id, bytes, source_id) in data.iter_with_source() {
         let font = FontRef::try_from_slice_and_index(bytes, sfnt_collection_index(*id))
             .map_err(|e| format!("Failed to parse font {:?}: {}", id, e))?;
-        font_refs.insert(*id, font);
+        font_refs.insert(*id, CairoFontRef { font, source_id });
     }
 
     if !font_refs.contains_key(&FontId::MainRegular) {
@@ -161,6 +169,27 @@ fn build_font_refs(data: &FontSet) -> Result<HashMap<FontId, FontRef<'_>>, Strin
     }
 
     Ok(font_refs)
+}
+
+/// Build one borrowed font reference without imposing the main-rendering
+/// requirement that the set also contains `MainRegular`.
+///
+/// Tests use this for isolated custom-font sets; production system fallback is
+/// retained by `SystemFontResolver` for the whole render.
+#[cfg(test)]
+fn build_font_ref(data: &FontSet, font_id: FontId) -> Result<Option<CairoFontRef<'_>>, String> {
+    let Some(bytes) = data.get(&font_id) else {
+        return Ok(None);
+    };
+    let font = FontRef::try_from_slice_and_index(bytes, sfnt_collection_index(font_id))
+        .map_err(|e| format!("Failed to parse font {:?}: {}", font_id, e))?;
+    Ok(Some(CairoFontRef {
+        font,
+        source_id: data
+            .iter_with_source()
+            .find_map(|(id, _, source_id)| (*id == font_id).then_some(source_id))
+            .expect("font bytes must have a source ID"),
+    }))
 }
 
 fn sfnt_collection_index(id: FontId) -> u32 {
@@ -172,21 +201,79 @@ fn sfnt_collection_index(id: FontId) -> u32 {
     }
 }
 
+/// Render with a system fallback that is loaded only after a prior face could
+/// not draw the glyph. The per-render resolver retains the parsed face so
+/// later fallback glyphs reuse it without copying the process-wide font bytes.
+#[allow(clippy::too_many_arguments)]
+fn render_char_with_system_fallback(
+    cr: &cairo::Context,
+    point: Point,
+    font_id: FontId,
+    ch: char,
+    color: Color,
+    em: f32,
+    font_cache: &HashMap<FontId, CairoFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
+) -> Result<bool, CairoError> {
+    if let Some(font) = font_cache.get(&font_id) {
+        let glyph_id = font.font.glyph_id(ch);
+        return if glyph_id.0 == 0 {
+            Ok(false)
+        } else {
+            render_glyph_with_font(
+                cr,
+                point,
+                FontGlyph {
+                    font_id,
+                    font: &font.font,
+                    source_id: font.source_id,
+                    glyph_id,
+                },
+                color,
+                em,
+            )
+        };
+    }
+
+    let Some(font) = system_fonts.get(font_id).map_err(CairoError::Font)? else {
+        return Ok(false);
+    };
+    let glyph_id = font.font().glyph_id(ch);
+    if glyph_id.0 == 0 {
+        return Ok(false);
+    }
+    render_glyph_with_font(
+        cr,
+        point,
+        FontGlyph {
+            font_id,
+            font: font.font(),
+            source_id: font.source_id(),
+            glyph_id,
+        },
+        color,
+        em,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_glyph(
     cr: &cairo::Context,
     point: Point,
     font_id: FontId,
     char_code: u32,
     color: Color,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, CairoFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
     em: f32,
 ) -> Result<(), CairoError> {
-    let font = match font_cache.get(&font_id) {
-        Some(font) => font,
+    let font_entry = match font_cache.get(&font_id) {
+        Some(entry) => entry,
         None => font_cache
             .get(&FontId::MainRegular)
             .ok_or_else(|| CairoError::Font("Main-Regular font not found".to_string()))?,
     };
+    let font = &font_entry.font;
 
     let ch = ratex_font::katex_ttf_glyph_char(font_id, char_code);
     let glyph_id = font.glyph_id(ch);
@@ -199,6 +286,7 @@ fn render_glyph(
             color,
             em,
             font_cache,
+            system_fonts,
             FallbackOptions {
                 skip_main_regular: false,
             },
@@ -216,6 +304,7 @@ fn render_glyph(
             FontGlyph {
                 font_id,
                 font,
+                source_id: font_entry.source_id,
                 glyph_id,
             },
             color,
@@ -232,6 +321,7 @@ fn render_glyph(
             FontGlyph {
                 font_id,
                 font,
+                source_id: font_entry.source_id,
                 glyph_id,
             },
             color,
@@ -239,25 +329,19 @@ fn render_glyph(
         )? {
             return Ok(());
         }
-        if try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache)? {
+        if try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache, system_fonts)? {
             return Ok(());
         }
-        if let Some(fallback_font) = font_cache.get(&FontId::CjkFallback) {
-            let fallback_id = fallback_font.glyph_id(ch);
-            if fallback_id.0 != 0 {
-                let _ = render_glyph_with_font(
-                    cr,
-                    point,
-                    FontGlyph {
-                        font_id: FontId::CjkFallback,
-                        font: fallback_font,
-                        glyph_id: fallback_id,
-                    },
-                    color,
-                    em,
-                )?;
-            }
-        }
+        let _ = render_char_with_system_fallback(
+            cr,
+            point,
+            FontId::CjkFallback,
+            ch,
+            color,
+            em,
+            font_cache,
+            system_fonts,
+        )?;
         return Ok(());
     }
 
@@ -268,6 +352,7 @@ fn render_glyph(
             FontGlyph {
                 font_id,
                 font,
+                source_id: font_entry.source_id,
                 glyph_id,
             },
             color,
@@ -275,7 +360,7 @@ fn render_glyph(
         )? {
             return Ok(());
         }
-        let _ = try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache)?;
+        let _ = try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache, system_fonts)?;
         return Ok(());
     }
 
@@ -285,6 +370,7 @@ fn render_glyph(
         FontGlyph {
             font_id,
             font,
+            source_id: font_entry.source_id,
             glyph_id,
         },
         color,
@@ -301,6 +387,7 @@ fn render_glyph(
         color,
         em,
         font_cache,
+        system_fonts,
         FallbackOptions {
             skip_main_regular: skip_main,
         },
@@ -319,25 +406,28 @@ struct FallbackOptions {
     skip_main_regular: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_system_unicode_fallback(
     cr: &cairo::Context,
     point: Point,
     ch: char,
     color: Color,
     em: f32,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, CairoFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
     options: FallbackOptions,
 ) -> Result<bool, CairoError> {
     if !options.skip_main_regular {
         if let Some(font) = font_cache.get(&FontId::MainRegular) {
-            let glyph_id = font.glyph_id(ch);
+            let glyph_id = font.font.glyph_id(ch);
             if glyph_id.0 != 0
                 && render_glyph_with_font(
                     cr,
                     point,
                     FontGlyph {
                         font_id: FontId::MainRegular,
-                        font,
+                        font: &font.font,
+                        source_id: font.source_id,
                         glyph_id,
                     },
                     color,
@@ -349,46 +439,34 @@ fn try_system_unicode_fallback(
         }
     }
 
-    if let Some(font) = font_cache.get(&FontId::CjkRegular) {
-        let glyph_id = font.glyph_id(ch);
-        if glyph_id.0 != 0
-            && render_glyph_with_font(
-                cr,
-                point,
-                FontGlyph {
-                    font_id: FontId::CjkRegular,
-                    font,
-                    glyph_id,
-                },
-                color,
-                em,
-            )?
-        {
-            return Ok(true);
-        }
-    }
-
-    if try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache)? {
+    if render_char_with_system_fallback(
+        cr,
+        point,
+        FontId::CjkRegular,
+        ch,
+        color,
+        em,
+        font_cache,
+        system_fonts,
+    )? {
         return Ok(true);
     }
 
-    if let Some(font) = font_cache.get(&FontId::CjkFallback) {
-        let glyph_id = font.glyph_id(ch);
-        if glyph_id.0 != 0
-            && render_glyph_with_font(
-                cr,
-                point,
-                FontGlyph {
-                    font_id: FontId::CjkFallback,
-                    font,
-                    glyph_id,
-                },
-                color,
-                em,
-            )?
-        {
-            return Ok(true);
-        }
+    if try_draw_emoji_or_outline(cr, point, ch, color, em, font_cache, system_fonts)? {
+        return Ok(true);
+    }
+
+    if render_char_with_system_fallback(
+        cr,
+        point,
+        FontId::CjkFallback,
+        ch,
+        color,
+        em,
+        font_cache,
+        system_fonts,
+    )? {
+        return Ok(true);
     }
 
     Ok(false)
@@ -400,35 +478,32 @@ fn try_draw_emoji_or_outline(
     ch: char,
     color: Color,
     em: f32,
-    font_cache: &HashMap<FontId, FontRef<'_>>,
+    font_cache: &HashMap<FontId, CairoFontRef<'_>>,
+    system_fonts: &SystemFontResolver,
 ) -> Result<bool, CairoError> {
+    if !ratex_unicode_font::is_emoji_candidate(ch) {
+        return Ok(false);
+    }
     if try_draw_emoji_png(cr, point, em, ch)? {
         return Ok(true);
     }
 
-    if let Some(font) = font_cache.get(&FontId::EmojiFallback) {
-        let glyph_id = font.glyph_id(ch);
-        if glyph_id.0 != 0 {
-            return render_glyph_with_font(
-                cr,
-                point,
-                FontGlyph {
-                    font_id: FontId::EmojiFallback,
-                    font,
-                    glyph_id,
-                },
-                color,
-                em,
-            );
-        }
-    }
-
-    Ok(false)
+    render_char_with_system_fallback(
+        cr,
+        point,
+        FontId::EmojiFallback,
+        ch,
+        color,
+        em,
+        font_cache,
+        system_fonts,
+    )
 }
 
 struct FontGlyph<'a> {
     font_id: FontId,
     font: &'a FontRef<'a>,
+    source_id: OutlineSourceId,
     glyph_id: ab_glyph::GlyphId,
 }
 
@@ -439,9 +514,10 @@ fn render_glyph_with_font(
     color: Color,
     em: f32,
 ) -> Result<bool, CairoError> {
-    let curves = match ratex_font_loader::outline_cache::get_or_compute_outline(
+    let curves = match ratex_font_loader::outline_cache::get_or_compute_outline_with_source_id(
         glyph.font_id,
         glyph.font,
+        glyph.source_id,
         glyph.glyph_id,
     ) {
         Some(curves) => curves,
@@ -766,6 +842,12 @@ mod tests {
     use ratex_layout::{layout, to_display_list, LayoutOptions};
     use ratex_parser::parse;
 
+    fn test_context() -> cairo::Context {
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 64, 64)
+            .expect("image surface should be created");
+        cairo::Context::new(&surface).expect("context should be created")
+    }
+
     #[test]
     fn render_metrics_include_padding() {
         let display_list = DisplayList {
@@ -805,5 +887,117 @@ mod tests {
         let cr = cairo::Context::new(&surface).expect("context should be created");
 
         render_to_cairo(&cr, &display_list, &options).expect("render should succeed");
+    }
+
+    #[test]
+    fn single_system_fallback_ref_does_not_require_main_regular() {
+        let Some(data) = ratex_unicode_font::load_unicode_font_data() else {
+            return;
+        };
+        let fonts = FontSet::from(HashMap::from([(
+            FontId::CjkRegular,
+            data.as_slice().to_vec(),
+        )]));
+
+        assert!(build_font_refs(&fonts).is_err());
+        assert!(build_font_ref(&fonts, FontId::CjkRegular)
+            .expect("CJK font should parse")
+            .is_some());
+    }
+
+    #[test]
+    fn lazy_fallback_does_not_turn_missing_glyph_into_font_error() {
+        let cr = test_context();
+        let system_fonts = SystemFontResolver::new();
+        let result = render_char_with_system_fallback(
+            &cr,
+            Point { x: 0.0, y: 0.0 },
+            FontId::EmojiFallback,
+            '\u{10FFFF}',
+            Color::BLACK,
+            16.0,
+            &HashMap::new(),
+            &system_fonts,
+        );
+
+        assert!(!result.expect("missing fallback glyph must not be a font error"));
+    }
+
+    #[test]
+    fn main_regular_miss_reaches_primary_cjk_fallback() {
+        let Some(data) = ratex_unicode_font::load_unicode_font_data() else {
+            return;
+        };
+        let font = FontRef::try_from_slice_and_index(
+            data.as_slice(),
+            ratex_unicode_font::unicode_font_face_index().unwrap_or(0),
+        )
+        .expect("primary Unicode font should parse");
+        let Some(ch) = (0x4E00..=0x9FFF)
+            .filter_map(char::from_u32)
+            .find(|&ch| font.glyph_id(ch).0 != 0)
+        else {
+            return;
+        };
+
+        let cr = test_context();
+        let system_fonts = SystemFontResolver::new();
+        assert!(try_system_unicode_fallback(
+            &cr,
+            Point { x: 0.0, y: 0.0 },
+            ch,
+            Color::BLACK,
+            16.0,
+            &HashMap::new(),
+            &system_fonts,
+            FallbackOptions {
+                skip_main_regular: true,
+            },
+        )
+        .expect("CJK fallback must not be a font error"));
+    }
+
+    #[test]
+    fn emoji_candidate_fallback_does_not_return_font_error() {
+        let cr = test_context();
+        let system_fonts = SystemFontResolver::new();
+        assert!(try_draw_emoji_or_outline(
+            &cr,
+            Point { x: 0.0, y: 0.0 },
+            '😀',
+            Color::BLACK,
+            16.0,
+            &HashMap::new(),
+            &system_fonts,
+        )
+        .is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn primary_cjk_miss_reaches_secondary_fallback() {
+        let primary = std::fs::read("/System/Library/Fonts/Supplemental/AppleGothic.ttf")
+            .expect("AppleGothic");
+        let fonts = FontSet::from(HashMap::from([(FontId::CjkRegular, primary)]));
+        let cjk_primary = build_font_ref(&fonts, FontId::CjkRegular)
+            .expect("AppleGothic should parse")
+            .expect("CJK primary should be present");
+        let cache = HashMap::from([(FontId::CjkRegular, cjk_primary)]);
+        let cr = test_context();
+        let system_fonts = SystemFontResolver::new();
+
+        assert!(try_system_unicode_fallback(
+            &cr,
+            Point { x: 0.0, y: 0.0 },
+            '汉',
+            Color::BLACK,
+            16.0,
+            &cache,
+            &system_fonts,
+            FallbackOptions {
+                skip_main_regular: true,
+            },
+        )
+        .expect("secondary fallback must not be a font error"));
     }
 }

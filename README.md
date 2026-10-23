@@ -53,6 +53,10 @@ RaTeX is the same KaTeX-compatible math engine compiled to a portable Rust core,
 
 **Physics units** — `\pu` for value + unit expressions following IUPAC conventions.
 
+**Centered relation negation** — `\centernot\implies`, `\centernot{\impliedby}`, and `\centernot{\iff}` center the negation slash over the entire argument and retain relation spacing (centernot package semantics).
+
+**Feynman slash notation** — `\slashed{p}` and `\slashed{\partial}`, with scripts and font commands.
+
 **Proof trees** — bussproofs-style `prooftree` for inference rules and sequent calculi:
 
 ```latex
@@ -239,6 +243,7 @@ CLI notes
 - `render-svg --stdout`: write SVG documents to stdout instead of files; status messages go to stderr.
 - `--help`: show supported options and whether the current build uses embedded fonts.
 - `--color` / `--background-color` accept named colors (for example `black`, `red`, `teal`), 3- or 6-digit hex (`#f00`, `#ff0000`), and KaTeX / MathJax-style color model values (`[RGB]255,0,0`, `[rgb]1,0,0`, `[HTML]B22222`, `[gray]0.5`, `[cmyk]0,1,1,0`).
+- `--padding <SIZE>` sets the base padding on each side for PNG and SVG output. The effective padding is scaled by `--dpr`.
 - `render-svg --office-compatible-colors`: emit SVG paint colors as `rgb(...)` plus opacity attributes instead of the default `rgba(...)`, for Office versions that do not understand `rgba(...)` in SVG.
 - `ratex-render --background-color transparent` produces a transparent PNG.
 

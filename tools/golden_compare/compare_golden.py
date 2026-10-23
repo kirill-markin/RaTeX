@@ -39,7 +39,7 @@ except ImportError:
 
 
 REPORT_VERSION = 1
-METRIC_VERSION = "ratex-ink-v1"
+METRIC_VERSION = "ratex-ink-v2"
 INK_THRESHOLD = 240
 NORM_HEIGHT = 120
 DEFAULT_PASS_THRESHOLD = 0.30
@@ -316,7 +316,7 @@ def compute_ink_metrics(
     *,
     prooftree_tolerant: bool = False,
 ) -> dict[str, Any]:
-    """Compute the versioned ratex-ink-v1 metric."""
+    """Compute the versioned ratex-ink-v2 metric."""
     ref_crop = crop_to_content(ref_img)
     test_crop = crop_to_content(test_img)
     ref_norm = normalize_size(ref_crop)
@@ -337,6 +337,32 @@ def compute_ink_metrics(
     test_final = pad_width(test_norm, width)
     ref_ink = get_ink_mask(ref_final)
     test_ink = get_ink_mask(test_final)
+    ref_ink_count = int(np.sum(ref_ink))
+    test_ink_count = int(np.sum(test_ink))
+
+    # Both formulas are blank: this is a perfect match (e.g. \\allowbreak).
+    # Without this special case, precision/recall are 0/0 and the combined
+    # score is pinned at 0.8 even though the rendered output is identical.
+    if ref_ink_count == 0 and test_ink_count == 0:
+        return {
+            "score": 1.0,
+            "iou": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "aspect_similarity": 1.0,
+            "width_similarity": 1.0,
+            "best_dx": 0,
+            "best_dy": 0,
+            "ref_size": [ref_img.shape[1], ref_img.shape[0]],
+            "test_size": [test_img.shape[1], test_img.shape[0]],
+            "ref_crop": [ref_crop.shape[1], ref_crop.shape[0]],
+            "test_crop": [test_crop.shape[1], test_crop.shape[0]],
+            "ref_ink_px": 0,
+            "test_ink_px": 0,
+            "tolerant_f1": 1.0 if prooftree_tolerant else None,
+        }
+
     (
         intersection,
         union,

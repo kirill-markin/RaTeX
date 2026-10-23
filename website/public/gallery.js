@@ -58,6 +58,27 @@
 
   const EM = 18;
   const PAD = 4;
+  const FONT_QUERIES = [
+    `${EM}px KaTeX_Main`,
+    `italic ${EM}px KaTeX_Main`,
+    `bold ${EM}px KaTeX_Main`,
+    `italic bold ${EM}px KaTeX_Main`,
+    `italic ${EM}px KaTeX_Math`,
+    `italic bold ${EM}px KaTeX_Math`,
+    `${EM}px KaTeX_AMS`,
+    `${EM}px KaTeX_Caligraphic`,
+    `${EM}px KaTeX_Fraktur`,
+    `bold ${EM}px KaTeX_Fraktur`,
+    `${EM}px KaTeX_SansSerif`,
+    `italic ${EM}px KaTeX_SansSerif`,
+    `bold ${EM}px KaTeX_SansSerif`,
+    `${EM}px KaTeX_Script`,
+    `${EM}px KaTeX_Typewriter`,
+    `${EM}px KaTeX_Size1`,
+    `${EM}px KaTeX_Size2`,
+    `${EM}px KaTeX_Size3`,
+    `${EM}px KaTeX_Size4`,
+  ];
 
   function fontIdToCss(fontId, sizePx) {
     switch (fontId) {
@@ -170,28 +191,86 @@
     ctx.restore();
   }
 
-  async function loadFonts() {
-    await Promise.all([
-      document.fonts.load(`${EM}px KaTeX_Main`),
-      document.fonts.load(`italic ${EM}px KaTeX_Main`),
-      document.fonts.load(`bold ${EM}px KaTeX_Main`),
-      document.fonts.load(`italic bold ${EM}px KaTeX_Main`),
-      document.fonts.load(`italic ${EM}px KaTeX_Math`),
-      document.fonts.load(`italic bold ${EM}px KaTeX_Math`),
-      document.fonts.load(`${EM}px KaTeX_AMS`),
-      document.fonts.load(`${EM}px KaTeX_Caligraphic`),
-      document.fonts.load(`${EM}px KaTeX_Fraktur`),
-      document.fonts.load(`bold ${EM}px KaTeX_Fraktur`),
-      document.fonts.load(`${EM}px KaTeX_SansSerif`),
-      document.fonts.load(`italic ${EM}px KaTeX_SansSerif`),
-      document.fonts.load(`bold ${EM}px KaTeX_SansSerif`),
-      document.fonts.load(`${EM}px KaTeX_Script`),
-      document.fonts.load(`${EM}px KaTeX_Typewriter`),
-      document.fonts.load(`${EM}px KaTeX_Size1`),
-      document.fonts.load(`${EM}px KaTeX_Size2`),
-      document.fonts.load(`${EM}px KaTeX_Size3`),
-      document.fonts.load(`${EM}px KaTeX_Size4`),
-    ]).catch(() => {});
+  const FONT_TIMEOUT_MS = 15000;
+
+  function withFontTimeout(promise, message) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), FONT_TIMEOUT_MS);
+      promise.then(
+        (value) => { clearTimeout(timer); resolve(value); },
+        (error) => { clearTimeout(timer); reject(error); }
+      );
+    });
+  }
+
+  function waitForFontStylesheet(retry) {
+    const g = typeof globalThis !== "undefined" ? globalThis : global;
+    if (retry && typeof g.__RATEX_RETRY_FONTS_STYLESHEET__ === "function") {
+      return g.__RATEX_RETRY_FONTS_STYLESHEET__();
+    }
+    const injectedStylesheetReady = g.__RATEX_FONTS_STYLESHEET_READY__;
+    if (injectedStylesheetReady && typeof injectedStylesheetReady.then === "function") {
+      return injectedStylesheetReady;
+    }
+
+    const existing = document.querySelector("link[data-ratex-fonts-stylesheet]");
+    if (!existing || (!retry && existing.sheet)) {
+      return Promise.resolve({ ok: true, href: existing && existing.href });
+    }
+    const link = retry ? existing.cloneNode(false) : existing;
+
+    return new Promise((resolve) => {
+      function finish(ok, timedOut) {
+        clearTimeout(timer);
+        link.removeEventListener("load", onLoad);
+        link.removeEventListener("error", onError);
+        resolve({ ok, href: link.href, timedOut: !!timedOut });
+      }
+      function onLoad() { finish(true); }
+      function onError() { finish(false); }
+      // Legacy static links may already have emitted an error before startup.
+      const timer = setTimeout(() => finish(false, true), FONT_TIMEOUT_MS);
+      link.addEventListener("load", onLoad);
+      link.addEventListener("error", onError);
+      if (retry) existing.replaceWith(link);
+    });
+  }
+
+  var fontsPromise = null;
+  var retryFonts = false;
+  function loadFonts() {
+    if (!fontsPromise) {
+      fontsPromise = (async function () {
+        const stylesheet = await withFontTimeout(
+          waitForFontStylesheet(retryFonts),
+          "Timed out loading the RaTeX font stylesheet. Try rendering again."
+        );
+        if (stylesheet && stylesheet.ok === false) {
+          throw new Error(
+            (stylesheet.timedOut ? "Timed out loading" : "Failed to load") +
+            " the RaTeX font stylesheet: " + stylesheet.href + ". Try rendering again."
+          );
+        }
+        if (!document.fonts || typeof document.fonts.load !== "function") {
+          throw new Error("This browser does not support the CSS Font Loading API.");
+        }
+
+        const loadedFaces = await withFontTimeout(
+          Promise.all(FONT_QUERIES.map((font) => document.fonts.load(font))),
+          "Timed out loading RaTeX fonts. Try rendering again."
+        );
+        const missingFonts = FONT_QUERIES.filter((_, index) => loadedFaces[index].length === 0);
+        if (missingFonts.length > 0) {
+          throw new Error("RaTeX fonts were not registered: " + missingFonts.join(", "));
+        }
+        retryFonts = false;
+      })().catch((error) => {
+        fontsPromise = null;
+        retryFonts = true;
+        throw error;
+      });
+    }
+    return fontsPromise;
   }
 
   async function loadWasm() {
@@ -212,7 +291,13 @@
         } catch (e) {
           return { renderLatex: null, wasmError: e };
         }
-      })();
+      })().then((engine) => {
+        if (!engine.renderLatex) playgroundEnginePromise = null;
+        return engine;
+      }).catch((error) => {
+        playgroundEnginePromise = null;
+        throw error;
+      });
     }
     return playgroundEnginePromise;
   }
@@ -252,7 +337,12 @@
     const dataUrl = new URL(dataUrlRaw, location.href).href;
 
     setStatus("Loading fonts…");
-    await loadFonts();
+    try {
+      await loadFonts();
+    } catch (error) {
+      setStatus("Failed to load fonts: " + error.message);
+      return;
+    }
 
     setStatus("Loading formula list…");
     let payload;

@@ -30,6 +30,8 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test PNG directory-font errors (without embedded fonts)
+        run: cargo test -p ratex-render --test font_parse_errors -- --ignored
       - name: Test release stack-safety boundary
         run: cargo test --release -p ratex-layout --test stack_safety
       - name: Test ratex-font-loader (all features)
@@ -51,6 +53,45 @@ jobs:
         run: cargo test -p ratex-render --test bench_render --features embed-fonts -- --ignored --nocapture
         continue-on-error: true
 
+  android-elf-alignment:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ndk: [r27, r28c]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+        with:
+          # Override the default package list, which includes the unavailable legacy "tools" package.
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.ndk }}
+      - name: Test ELF verifier
+        run: python3 -m unittest discover -s scripts -p 'test_verify_android_elf.py'
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ matrix.ndk }}
+      - name: Build and verify Android libraries
+        run: bash platforms/android/build-android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+      - name: Assemble release AAR
+        working-directory: demo/android
+        run: ./gradlew :ratex-android:assembleRelease --no-daemon
+      - name: Verify release AAR
+        run: python3 scripts/verify_android_elf.py platforms/android/build/outputs/aar/ratex-android-release.aar
+
   web-wasm-build:
     runs-on: ubuntu-latest
     steps:
@@ -58,6 +99,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Install website dependencies
+        run: npm --prefix website ci
+      - name: Test website font loading and retry behavior
+        working-directory: website
+        run: npm test
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -69,6 +115,47 @@ jobs:
           cd platforms/web
           npm ci
           npm test
+
+  website-build:
+    name: website-build (${{ matrix.package-manager }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package-manager: npm
+            node: "20"
+          - package-manager: pnpm
+            node: "24"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v6
+        if: matrix.package-manager == 'pnpm'
+        with:
+          version: "11.25.0"
+          package_json_file: website/package.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install website dependencies with npm
+        if: matrix.package-manager == 'npm'
+        run: npm --prefix website ci
+      - name: Install website dependencies with pnpm
+        if: matrix.package-manager == 'pnpm'
+        working-directory: website
+        run: pnpm install --frozen-lockfile
+      - name: Test the website image service
+        run: npm --prefix website test
+      - name: Build the website and verify bundled WASM
+        run: |
+          node tools/generate_website_formulas.mjs
+          npm --prefix website run build
 
   gtk-gobject-smoke:
     runs-on: ubuntu-latest
@@ -153,9 +240,11 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Install iOS Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+          rustup target add --toolchain nightly-2026-08-16 \
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - uses: Swatinem/rust-cache@v2
       - uses: subosito/flutter-action@v2
         with:

@@ -1,6 +1,6 @@
 # RaTeX — Apple Integration Guide
 
-Native iOS and macOS rendering of LaTeX math formulas via Swift and CoreGraphics.
+Native iOS, macOS and Mac Catalyst rendering of LaTeX math formulas via Swift and CoreGraphics.
 No WebView, no JavaScript, no DOM.
 
 ---
@@ -52,16 +52,19 @@ Manager or `RaTeXFontLoader.loadFromCocoaPodsBundle()` with `RaTeXCore`.
 | Tool | Version |
 |------|---------|
 | Xcode | 15+ |
-| Rust | 1.75+ (`rustup`) |
+| Rust | Stable toolchain for macOS; `nightly-2026-08-16` with `rust-src` for iOS and Catalyst |
 | iOS target | 14+ |
 | macOS target | 14+ |
+| Mac Catalyst target | 14+ |
 
 Install Rust Apple targets once:
 
 ```bash
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+rustup target add --toolchain nightly-2026-08-16 \
+  aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+  aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-rustup target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 ```
 
 ---
@@ -74,20 +77,41 @@ From the repo root:
 bash scripts/build-apple-xcframework.sh
 ```
 
-This produces `platforms/ios/RaTeX.xcframework` with iOS device, iOS simulator,
-macOS and Mac Catalyst slices. Simulator, macOS and Catalyst each contain arm64
-and x86_64; the device slice contains arm64. Catalyst uses Rust's official
-[macabi targets](https://doc.rust-lang.org/rustc/platform-support/apple-ios-macabi.html)
-and the macOS SDK, with an iOS 14.0 deployment target. `--ios` and `--macos` retain
-their platform-only behavior.
+This produces `platforms/ios/RaTeX.xcframework` with these slices:
 
-The fork's [Catalyst XCFramework workflow](../../.github/workflows/catalyst-build.yml)
-builds and verifies all slices, compiles the unchanged UIKit wrapper for both
-Catalyst architectures through a temporary local Swift package, and runs a
-bundled formula smoke on the runner's native architecture. Its artifact contains
-`RaTeX.xcframework.zip`, the SHA-256 file, and source SHA/run/toolchain provenance.
-It does not publish releases or change `Package.swift`; preserve the successful
-main-run artifact in an immutable binary release before pinning consumers to it.
+| Platform | Architectures |
+|----------|---------------|
+| iOS device | arm64 |
+| iOS simulator | arm64, x86_64 |
+| macOS | arm64, x86_64 |
+| Mac Catalyst | arm64, x86_64 |
+
+Catalyst uses Rust's official
+[macabi targets](https://doc.rust-lang.org/rustc/platform-support/apple-ios-macabi.html)
+and the macOS SDK, with an iOS 14.0 deployment target. iOS and Catalyst use the
+pinned nightly toolchain to build `std` with `panic_abort`; the builder verifies
+that their libraries have no `_rust_eh_personality` unwind relocations.
+`--ios` and `--macos` retain their platform-only behavior.
+
+The [Catalyst XCFramework workflow](../../.github/workflows/catalyst-build.yml)
+builds and verifies all slices, compiles the UIKit Swift wrapper and links the
+C ABI for both Catalyst architectures through a temporary copy of the repository's
+Swift package manifest, overriding only the binary target location to use the
+local build, and uploads `RaTeX.xcframework.zip`, its SHA-256 file, and source
+SHA/run/toolchain provenance in a uniquely named artifact. Its bundled formula smoke runs
+on the runner's native architecture and checks parse/layout geometry, bundled
+fonts, public font registration queries, and visible rendered pixels. Intel
+runtime execution is not covered on an Apple Silicon runner. The workflow can
+also be started with `workflow_dispatch`. It does not publish releases or change
+`Package.swift`; preserve the successful main-run artifact in an immutable binary
+release before pinning consumers to it.
+
+To run the same integration smoke after building the combined artifact:
+
+```bash
+bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
+bash scripts/smoke-catalyst-integration.sh
+```
 
 For an iOS-only local artifact, use the compatibility wrapper:
 
@@ -101,11 +125,20 @@ bash platforms/ios/build-ios.sh
 
 ### Option A — Swift Package Manager (recommended)
 
-In Xcode: **File → Add Package Dependencies**, enter `https://github.com/erweixin/RaTeX` and select the `RaTeX` product.
+In Xcode: **File → Add Package Dependencies**, enter `https://github.com/kirill-markin/RaTeX` and select the `RaTeX` product. The committed manifest uses the existing `catalyst-binary-0.1.14-1` release until a separate binary release is published and pinned.
 
-**Local development** — Run `bash platforms/ios/build-ios.sh` first for iOS-only work, or `bash scripts/build-apple-xcframework.sh` for macOS SPM consumers. Then point Xcode to the repo root via **File → Add Package Dependencies → Add Local…**.
+**Local development** — Run `bash platforms/ios/build-ios.sh` for iOS-only work, or `bash scripts/build-apple-xcframework.sh` for macOS or Mac Catalyst SPM consumers. The build scripts do not change the manifest. To consume the rebuilt FFI, temporarily replace the `RaTeXFFI` binary target's `url` and `checksum` in the root `Package.swift` with a local `path`:
 
-For a runnable macOS SPM integration check, see `demo/spm-macos`.
+```swift
+.binaryTarget(
+    name: "RaTeXFFI",
+    path: "platforms/ios/RaTeX.xcframework"
+)
+```
+
+Then point Xcode to the repo root via **File → Add Package Dependencies → Add Local…**. Keep this local override uncommitted; the committed manifest must retain its published URL and checksum. Alternatively, use [manual integration](#option-b--manual) below with the rebuilt XCFramework.
+
+For a runnable macOS SPM integration check, see `demo/spm-macos`. For Catalyst, enable **Mac Catalyst** in the app target's supported destinations; `RaTeXView` uses UIKit and `RaTeXFormula` uses its UIKit SwiftUI bridge.
 
 ### Option B — Manual
 

@@ -4,6 +4,7 @@ use ratex_types::display_item::{DisplayItem, DisplayList};
 use ratex_types::path_command::PathCommand;
 
 use crate::layout_box::{BoxContent, LayoutBox, VBoxChildKind};
+use crate::resource_limits::vertical_dash_count;
 use crate::surd::surd_font_for_inner_height;
 
 /// Unicode √ (U+221A), same glyph KaTeX uses for `\sqrt` surd.
@@ -606,21 +607,22 @@ fn emit_box(
                         };
                         let abs_x = x + local_x * scale - line_thickness / 2.0;
                         if *is_dashed {
-                            // Dashed vertical line: draw segments (dash=4t, gap=4t) top to bottom.
-                            let t = line_thickness;
-                            let dash = 4.0 * t;
+                            // Use the same local segment count as checked layout.
+                            // Indexed positions cannot stall at large coordinates,
+                            // and scaling never changes the number of segments.
+                            let height = lbox.height + lbox.depth;
+                            let dash = 4.0 * rule_thickness;
                             let period = 2.0 * dash;
-                            let mut cur_y = y_top;
-                            while cur_y < y_top + array_total_height {
-                                let seg_h = dash.min(y_top + array_total_height - cur_y);
+                            for i in 0..vertical_dash_count(height, *rule_thickness) {
+                                let offset = i as f64 * period;
+                                let seg_h = dash.min((height - offset).max(0.0));
                                 items.push(DisplayItem::Rect {
                                     x: abs_x,
-                                    y: cur_y,
-                                    width: t,
-                                    height: seg_h,
+                                    y: y_top + offset * scale,
+                                    width: line_thickness,
+                                    height: seg_h * scale,
                                     color: lbox.color,
                                 });
-                                cur_y += period;
                             }
                         } else {
                             items.push(DisplayItem::Rect {
