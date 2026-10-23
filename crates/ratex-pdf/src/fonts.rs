@@ -314,6 +314,7 @@ pub(crate) fn collect_glyph_usage(
 ///
 /// Skips emoji that don't have PNG rasters (e.g., Windows COLR fonts) — they should have been
 /// filtered out by [`collect_glyph_usage`], but this provides a safety net.
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 pub(crate) fn embed_emoji_rasters(
     pdf: &mut Pdf,
     alloc: &mut Ref,
@@ -392,6 +393,7 @@ pub(crate) fn embed_emoji_rasters(
     Ok(out)
 }
 
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn decode_png_rgba8(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(data));
     dec.set_transformations(png::Transformations::EXPAND);
