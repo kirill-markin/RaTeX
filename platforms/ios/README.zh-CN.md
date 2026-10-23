@@ -1,6 +1,6 @@
 # RaTeX — Apple 集成说明
 
-通过 Swift 与 CoreGraphics 在 iOS 和 macOS 上原生渲染 LaTeX 数学公式。
+通过 Swift 与 CoreGraphics 在 iOS、macOS 和 Mac Catalyst 上原生渲染 LaTeX 数学公式。
 无 WebView、无 JavaScript、无 DOM。
 
 ---
@@ -29,7 +29,7 @@ UIView / NSView / SwiftUI View
    ```
    **可选**：若希望在启动时提前加载字体（例如避免首屏公式略有延迟），可在 App 启动时调用 `RaTeXFontLoader.loadFromPackageBundle()`。
 
-**本地开发**（修改 RaTeX 源码时）：iOS-only 可先执行 `bash platforms/ios/build-ios.sh`；如果要验证 macOS SPM 集成，请执行 `bash scripts/build-apple-xcframework.sh`，再在 Xcode 里 **File → Add Package Dependencies → Add Local…** 选择 RaTeX 仓库根目录。
+**本地开发**（修改 RaTeX 源码时）：iOS-only 可先执行 `bash platforms/ios/build-ios.sh`；如果要验证 macOS 或 Mac Catalyst SPM 集成，请执行 `bash scripts/build-apple-xcframework.sh`，再在 Xcode 里 **File → Add Package Dependencies → Add Local…** 选择 RaTeX 仓库根目录。
 
 ---
 
@@ -38,14 +38,18 @@ UIView / NSView / SwiftUI View
 | 工具 | 版本 |
 |------|------|
 | Xcode | 15+ |
-| Rust | 1.75+（rustup） |
+| Rust | macOS 使用 stable；iOS 和 Catalyst 使用带 `rust-src` 的 `nightly-2026-08-16` |
 | iOS 目标 | 14+ |
 | macOS 目标 | 14+ |
+| Mac Catalyst 目标 | 14+ |
 
 安装 Rust Apple 目标（一次性）：
 
 ```bash
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+rustup target add --toolchain nightly-2026-08-16 \
+  aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+  aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
@@ -59,7 +63,34 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 bash scripts/build-apple-xcframework.sh
 ```
 
-将生成同时包含 **iOS** 和 **macOS** 切片的 `platforms/ios/RaTeX.xcframework`。
+将生成包含以下切片的 `platforms/ios/RaTeX.xcframework`：
+
+| 平台 | 架构 |
+|------|------|
+| iOS 真机 | arm64 |
+| iOS 模拟器 | arm64、x86_64 |
+| macOS | arm64、x86_64 |
+| Mac Catalyst | arm64、x86_64 |
+
+Catalyst 使用 Rust 官方的
+[macabi 目标](https://doc.rust-lang.org/rustc/platform-support/apple-ios-macabi.html)
+及 macOS SDK，iOS 部署目标为 14.0。iOS 和 Catalyst 使用固定的 nightly 工具链，
+以 `panic_abort` 构建 `std`；构建脚本检查这些静态库不含 `_rust_eh_personality`
+展开元数据重定位。`--ios` 和 `--macos` 仍仅构建各自的平台。
+
+[Catalyst XCFramework 工作流](../../.github/workflows/catalyst-build.yml)构建并验证
+所有切片，通过仓库 Swift package manifest 的临时副本为两种 Catalyst 架构编译
+UIKit Swift 封装并链接 C ABI，仅替换 binary target 地址以使用本地产物，
+上传 `RaTeX.xcframework.zip`。应用冒烟检查在 runner 的原生架构上运行，
+验证解析与布局几何、字体资源、公开字体注册查询接口以及可见渲染像素。
+Apple Silicon runner 不覆盖 Intel 运行时执行。也可通过 `workflow_dispatch` 手动启动工作流。
+
+构建完整产物后，可运行同一集成检查：
+
+```bash
+bash scripts/verify-xcframework-slices.sh platforms/ios/RaTeX.xcframework ios macos maccatalyst
+bash scripts/smoke-catalyst-integration.sh
+```
 
 如果只需要本地 iOS 产物，可使用兼容入口：
 
@@ -75,9 +106,9 @@ bash platforms/ios/build-ios.sh
 
 在 Xcode 中：**File → Add Package Dependencies**，输入 `https://github.com/erweixin/RaTeX`，选择 `RaTeX` 产品。
 
-**本地开发** — iOS-only 可先执行 `bash platforms/ios/build-ios.sh`；macOS SPM 消费方请执行 `bash scripts/build-apple-xcframework.sh`，确保本地 binary target 包含 macOS 切片。然后在 Xcode 中通过 **File → Add Package Dependencies → Add Local…** 指向仓库根目录。
+**本地开发** — iOS-only 可先执行 `bash platforms/ios/build-ios.sh`；macOS 或 Mac Catalyst SPM 消费方请执行 `bash scripts/build-apple-xcframework.sh`，确保本地 binary target 包含所需的平台切片。然后在 Xcode 中通过 **File → Add Package Dependencies → Add Local…** 指向仓库根目录。
 
-可运行的 macOS SPM 集成验证示例见 `demo/spm-macos`。
+可运行的 macOS SPM 集成验证示例见 `demo/spm-macos`。Catalyst 项目需在应用 target 的支持目标中启用 **Mac Catalyst**；`RaTeXView` 使用 UIKit，`RaTeXFormula` 使用对应的 UIKit SwiftUI 桥接。
 
 ### 方式 B — 手动集成
 

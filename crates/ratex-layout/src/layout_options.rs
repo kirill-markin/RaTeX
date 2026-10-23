@@ -2,6 +2,14 @@ use ratex_font::{get_global_metrics, MathConstants};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 
+/// Metrics of a glyph the KaTeX fonts lack, in em, as the host's fallback font draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FallbackGlyphMetrics {
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
+}
+
 /// Layout options passed through the layout tree.
 #[derive(Debug, Clone)]
 pub struct LayoutOptions {

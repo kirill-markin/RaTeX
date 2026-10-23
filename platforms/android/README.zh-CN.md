@@ -7,7 +7,7 @@ minSdk 21，targetSdk 34。
 
 1. **添加依赖** — 在 app 的 `build.gradle` 中：
    ```kotlin
-   implementation("io.github.erweixin:ratex-android:0.1.14")
+   implementation("io.github.erweixin:ratex-android:0.1.15")
    ```
 2. **使用** — 布局里放 `RaTeXView`，代码中设置 LaTeX 与字号；字体会在首次渲染时自动加载，无需手动调用。
    ```kotlin
@@ -18,7 +18,7 @@ minSdk 21，targetSdk 34。
 
 ## 本地开发（从源码构建）
 
-**环境要求**：NDK 26+、Rust，执行 `cargo install cargo-ndk` 并安装目标：
+**环境要求**：NDK 26+、Python 3、Rust，执行 `cargo install cargo-ndk` 并安装目标：
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 ```
@@ -35,6 +35,35 @@ include(":ratex-android")
 project(":ratex-android").projectDir = file("path/to/RaTeX/platforms/android")
 ```
 然后在 app 中：`implementation(project(":ratex-android"))`。
+
+## 16 KB 内存页兼容性
+
+从源码构建时，64 位 Android `ratex-ffi` 动态库显式设置
+`max-page-size=16384` 与 `common-page-size=16384`，使 LOAD 段和
+GNU_RELRO 结束地址正确对齐，包括使用 NDK r27 的情况。
+构建脚本检查 `arm64-v8a` 和 `x86_64`，缺少库或对齐错误都会导致失败。
+此源码修复不会改变已经发布的 0.1.14 AAR；该版本的 RELRO 结束地址
+未按 16 KB 对齐（issue #165）。
+
+发布前检查 release AAR，也可用同一脚本检查下载的 AAR：
+
+```bash
+(cd demo/android && ./gradlew :ratex-android:assembleRelease)
+python3 scripts/verify_android_elf.py platforms/android/build/outputs/aar/ratex-android-release.aar
+# 同时支持 jniLibs 目录：
+python3 scripts/verify_android_elf.py platforms/android/src/main/jniLibs
+python3 -m unittest discover -s scripts -p 'test_verify_android_elf.py'
+```
+
+CI 检查 NDK r27 和 r28c 构建；Android、React Native、Flutter 发布前均检查
+各自的 Android 库，Maven 发布还会检查组装后的 AAR。
+必须保留 RELRO 保护，仅检查 LOAD 对齐不足以验证兼容性。
+
+应用还需单独满足 APK ZIP 对齐要求（未压缩原生库应使用 AGP 8.5.1+；
+仓库 demo 当前仍使用 AGP 8.2.2）。运行 `zipalign -c -P 16 -v 4 app.apk`，
+再在 4 KB 和 16 KB 设备上验证库加载及公式渲染；后者执行
+`adb shell getconf PAGE_SIZE` 应返回 `16384`。参见
+[Android 内存页指南](https://developer.android.com/guide/practices/page-sizes)。
 
 ## 使用
 

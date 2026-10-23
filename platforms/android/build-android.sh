@@ -5,6 +5,7 @@
 #   cargo install cargo-ndk
 #   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 #   NDK installed (set ANDROID_NDK_HOME or let cargo-ndk auto-detect)
+#   Python 3 (for the 64-bit ELF alignment check)
 #
 # Output: platforms/android/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/libratex_ffi.so
 
@@ -44,5 +45,7 @@ done
 for PID in "${PIDS[@]}"; do
     wait "$PID" || { echo "==> Build failed!"; exit 1; }
 done
+
+python3 "$REPO_ROOT/scripts/verify_android_elf.py" "$JNILIBS"
 
 echo "==> Done. Libraries copied to $JNILIBS"

@@ -2,6 +2,9 @@
 
 Thanks for helping improve RaTeX. Keep changes focused and consistent with surrounding code.
 
+When restructuring core logic, follow the module boundaries and compatibility
+capture workflow in [`docs/CORE_INTERNALS.md`](docs/CORE_INTERNALS.md).
+
 ## Prerequisites
 
 - **Rust**: stable toolchain ([rustup](https://rustup.rs)); see README for minimum version.
@@ -20,6 +23,41 @@ cargo test --workspace
 ```
 
 CI runs the same checks (`.github/workflows/ci.yml`) after installing GTK dependencies. The local pre-commit hook skips only `ratex-gtk4` when GTK4/graphene `pkg-config` files are missing, while still linting the rest of the workspace.
+
+Website font-loading regressions run without a browser or WASM build:
+
+```bash
+cd website && npm test
+```
+
+These tests cover early stylesheet events, 15-second stylesheet/font timeouts,
+failure status, and retries that request a fresh stylesheet. The home playground
+restores its Render button after a font error so users can retry without a reload.
+
+## Rendering performance
+
+Measure first-use PNG latency with a fresh process for each formula and sample:
+
+```bash
+cargo test -p ratex-render --test cold_start --release -- --ignored --nocapture
+```
+
+This emits JSON samples for six categories, separating first parse/layout,
+first PNG render, and a second render. `RATEX_COLD_SAMPLES` defaults to 9.
+It resets application caches, not the operating system's file cache, and excludes
+process startup from the reported timings. For before/after comparisons, use
+separate Cargo target directories, the same font directory (`RATEX_BENCH_FONT_DIR`),
+and alternate executions of the two release test binaries. The child entry point
+is `--ignored --exact cold_start_sample --nocapture` with `RATEX_COLD_CASE` set to
+`math`, `complex`, `matrix`, `cjk`, `emoji`, or `chem`. Set `RATEX_COLD_ONLY=1` when
+measuring its process peak RSS to exclude the second render.
+
+Directory-font error regressions also require a targeted invocation to prevent
+workspace feature unification from replacing directory fonts with embedded fonts:
+
+```bash
+cargo test -p ratex-render --test font_parse_errors -- --ignored
+```
 
 ## Golden (visual) tests
 
@@ -62,6 +100,13 @@ Ink score for that suite:
 ```bash
 cargo test -p ratex-render golden_mhchem_smoke -- --nocapture
 ```
+
+## Macro allocation safety
+
+Macro and mhchem builders share cumulative allocation limits. See
+[`docs/EXPANSION_RESOURCE_LIMITS.md`](docs/EXPANSION_RESOURCE_LIMITS.md) before
+changing token copying, parameter substitution, or generated-text/JSON builders.
+Check resources before construction and preserve ownership transfers.
 
 ## Stack safety
 

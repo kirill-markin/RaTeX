@@ -40,27 +40,44 @@ jobs:
         env:
           BASELINE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
-          base_dir="$RUNNER_TEMP/golden-base"
-          git worktree add --detach "$base_dir" "$BASELINE_SHA"
-          npm ci --prefix "$base_dir/tools/golden_compare"
-          (
-            cd "$base_dir"
-            ./scripts/update_golden_output.sh --png-only
-            node tools/golden_compare/generate_reference.mjs
-          )
-          python3 tools/golden_compare/compare_golden.py \
-            --test-cases "$base_dir/tests/golden/test_cases.txt" \
-            --fixtures "$base_dir/tests/golden/fixtures" \
-            --output "$base_dir/tests/golden/output" \
-            --policy "$base_dir/tests/golden/policy.json" \
-            --baseline-out "$RUNNER_TEMP/golden-baseline.json" \
-            --require-manifests \
-            --fail-on-missing \
-            --min-coverage 1.0
-          cp "$base_dir/tests/golden/test_cases.txt" \
-            "$RUNNER_TEMP/golden-baseline-cases.txt"
-          echo "Generated same-runner baseline from $BASELINE_SHA"
+          if [[ "$BASELINE_SHA" != "0000000000000000000000000000000000000000" ]] && \
+            git fetch --no-tags --depth=1 origin "$BASELINE_SHA" && \
+            git cat-file -e "${BASELINE_SHA}^{commit}"; then
+            base_dir="$RUNNER_TEMP/golden-base"
+            git worktree add --detach "$base_dir" "$BASELINE_SHA"
+            npm ci --prefix "$base_dir/tools/golden_compare"
+            (
+              cd "$base_dir"
+              ./scripts/update_golden_output.sh --png-only
+              node tools/golden_compare/generate_reference.mjs
+            )
+            python3 tools/golden_compare/compare_golden.py \
+              --test-cases "$base_dir/tests/golden/test_cases.txt" \
+              --fixtures "$base_dir/tests/golden/fixtures" \
+              --output "$base_dir/tests/golden/output" \
+              --policy "$base_dir/tests/golden/policy.json" \
+              --baseline-out "$RUNNER_TEMP/golden-baseline.json" \
+              --require-manifests \
+              --fail-on-missing \
+              --min-coverage 1.0
+            cp "$base_dir/tests/golden/test_cases.txt" \
+              "$RUNNER_TEMP/golden-baseline-cases.txt"
+            echo "Generated same-runner baseline from $BASELINE_SHA"
+          else
+            echo "::notice::The target commit is unavailable; running absolute gates only."
+          fi
+      - name: Check blank-output geometry against target commit
+        run: |
+          if [[ -d "$RUNNER_TEMP/golden-base/tests/golden/output" ]]; then
+            python3 tools/golden_compare/check_blank_geometry.py \
+              --baseline-cases "$RUNNER_TEMP/golden-base/tests/golden/test_cases.txt" \
+              --baseline-output "$RUNNER_TEMP/golden-base/tests/golden/output" \
+              --current-cases tests/golden/test_cases.txt \
+              --current-output tests/golden/output \
+              --max-size-regression 0.05
+          else
+            echo "::notice::The target commit output is unavailable; skipping blank geometry regression gate."
+          fi
       - name: Score with the authoritative Python comparator
         run: |
           mkdir -p artifacts/golden
@@ -80,9 +97,14 @@ jobs:
             --min-coverage 1.0 \
             --min-mean 0.85 \
             "${baseline_args[@]}"
+      - name: Verify centered negation against the package-semantics oracle
+        run: ./scripts/update_golden_centernot.sh
       - name: Upload machine-readable golden report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: golden-report
-          path: artifacts/golden/
+          path: |
+            artifacts/golden/
+            tests/golden/reports/centernot/
+            tests/golden/diffs_centernot/

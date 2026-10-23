@@ -8,6 +8,9 @@ on:
       - .github/workflows/catalyst-build.yml
       - scripts/build-apple-xcframework.sh
       - scripts/verify-xcframework-slices.sh
+      - scripts/verify-apple-static-libraries.sh
+      - .github/workflows/release-ios.yml
+      - .github/workflows/release-react-native.yml
       - scripts/smoke-catalyst-integration.sh
       - platforms/ios/**
       - crates/**
@@ -20,6 +23,9 @@ on:
       - .github/workflows/catalyst-build.yml
       - scripts/build-apple-xcframework.sh
       - scripts/verify-xcframework-slices.sh
+      - scripts/verify-apple-static-libraries.sh
+      - .github/workflows/release-ios.yml
+      - .github/workflows/release-react-native.yml
       - scripts/smoke-catalyst-integration.sh
       - platforms/ios/**
       - crates/**
@@ -40,8 +46,13 @@ jobs:
         with:
           targets: >-
             aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,
-            aarch64-apple-darwin,x86_64-apple-darwin,
-            aarch64-apple-ios-macabi,x86_64-apple-ios-macabi
+            aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Install Apple Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-16 --profile minimal --component rust-src
+          rustup target add --toolchain nightly-2026-08-16 \
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+            aarch64-apple-ios-macabi x86_64-apple-ios-macabi
       - uses: Swatinem/rust-cache@v2
       - name: Build all Apple slices
         run: bash scripts/build-apple-xcframework.sh
@@ -72,6 +83,7 @@ jobs:
               "run_url": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
               "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
               "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+              "ios_rustc": subprocess.check_output(["rustc", "+nightly-2026-08-16", "--version"], text=True).strip(),
               "xcode": subprocess.check_output(["xcodebuild", "-version"], text=True).strip(),
           }
           Path("artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")

@@ -1,4 +1,36 @@
-use crate::token::Token;
+use crate::token::{SourceLocation, Token};
+
+/// A token scanned without allocating its text. Normalized whitespace borrows
+/// static text; other non-EOF spans borrow the lexer's original input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSpan<'a> {
+    pub text: &'a str,
+    pub loc: SourceLocation,
+    pub is_eof: bool,
+}
+impl<'a> TokenSpan<'a> {
+    fn new(text: &'a str, start: usize, end: usize) -> Self {
+        Self {
+            text,
+            loc: SourceLocation { start, end },
+            is_eof: false,
+        }
+    }
+    fn eof(pos: usize) -> Self {
+        Self {
+            text: "EOF",
+            loc: SourceLocation {
+                start: pos,
+                end: pos,
+            },
+            is_eof: true,
+        }
+    }
+    /// Allocate an owned token after the caller has checked its resource limits.
+    pub fn into_token(self) -> Token {
+        Token::new(self.text, self.loc.start, self.loc.end)
+    }
+}
 
 /// Lexer for LaTeX math input.
 ///
@@ -99,9 +131,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// Lex `\verb*<d>...<d>` or `\verb<d>...<d>` after `\verb` has been consumed.
-    fn lex_verb(&mut self, start: usize, _: bool) -> Token {
+    fn lex_verb(&mut self, start: usize, _: bool) -> TokenSpan<'a> {
         if self.at_end() {
-            return Token::new("\\verb", start, self.pos);
+            return TokenSpan::new("\\verb", start, self.pos);
         }
         // Check for \verb* variant
         let starred = self.peek_byte() == Some(b'*');
@@ -110,7 +142,7 @@ impl<'a> Lexer<'a> {
         }
         if self.at_end() {
             let text = &self.input[start..self.pos];
-            return Token::new(text, start, self.pos);
+            return TokenSpan::new(text, start, self.pos);
         }
         // The next character is the delimiter
         let delim = self.advance_char().unwrap();
@@ -118,33 +150,33 @@ impl<'a> Lexer<'a> {
         while let Some(ch) = self.advance_char() {
             if ch == delim {
                 let text = &self.input[start..self.pos];
-                return Token::new(text, start, self.pos);
+                return TokenSpan::new(text, start, self.pos);
             }
         }
         // Unterminated \verb — return what we have
         let text = &self.input[start..self.pos];
-        Token::new(text, start, self.pos)
+        TokenSpan::new(text, start, self.pos)
     }
 
     /// Lex a single token from the current position.
-    pub fn lex(&mut self) -> Token {
+    pub fn next_span(&mut self) -> TokenSpan<'a> {
         loop {
             // Skip whitespace, returning a space token if any was found
             if self.at_end() {
-                return Token::eof(self.pos);
+                return TokenSpan::eof(self.pos);
             }
 
             let start = self.pos;
             let ch = match self.current_char() {
                 Some(c) => c,
-                None => return Token::eof(self.pos),
+                None => return TokenSpan::eof(self.pos),
             };
 
             // Whitespace → single space token
             if let Some(b) = self.peek_byte() {
                 if Self::is_whitespace(b) {
                     self.skip_whitespace();
-                    return Token::new(" ", start, self.pos);
+                    return TokenSpan::new(" ", start, self.pos);
                 }
             }
 
@@ -166,7 +198,7 @@ impl<'a> Lexer<'a> {
             if ch == '\\' {
                 self.pos += 1; // consume the backslash
                 if self.at_end() {
-                    return Token::new("\\", start, self.pos);
+                    return TokenSpan::new("\\", start, self.pos);
                 }
 
                 let next_byte = self.bytes[self.pos];
@@ -175,7 +207,7 @@ impl<'a> Lexer<'a> {
                     // Control space: \<whitespace> → "\\ " token, then skip trailing whitespace
                     self.pos += 1;
                     self.skip_whitespace();
-                    return Token::new("\\ ", start, self.pos);
+                    return TokenSpan::new("\\ ", start, self.pos);
                 }
 
                 if Self::is_control_word_char(next_byte) {
@@ -195,20 +227,20 @@ impl<'a> Lexer<'a> {
                     let end = self.pos;
                     // Skip trailing whitespace after control word (KaTeX behavior)
                     self.skip_whitespace();
-                    return Token::new(text, start, end);
+                    return TokenSpan::new(text, start, end);
                 }
 
                 // Control symbol: \<single non-letter char>
                 let sym_char = self.current_char().unwrap();
                 self.pos += sym_char.len_utf8();
                 let text = &self.input[start..self.pos];
-                return Token::new(text, start, self.pos);
+                return TokenSpan::new(text, start, self.pos);
             }
 
             // Active character (catcode 13, default `~`) → rendered as a space
             if self.catcode(ch) == 13 {
                 self.advance_char();
-                return Token::new(ch.to_string(), start, self.pos);
+                return TokenSpan::new(&self.input[start..self.pos], start, self.pos);
             }
 
             // Regular character (including {, }, ^, _, &, etc.)
@@ -222,8 +254,13 @@ impl<'a> Lexer<'a> {
                     break;
                 }
             }
-            return Token::new(&self.input[start..self.pos], start, self.pos);
+            return TokenSpan::new(&self.input[start..self.pos], start, self.pos);
         }
+    }
+
+    /// Lex a single owned token, preserving the original lexer API.
+    pub fn lex(&mut self) -> Token {
+        self.next_span().into_token()
     }
 
     /// Lex all remaining tokens until EOF.
@@ -845,5 +882,30 @@ mod tests {
                 "t", "r", "i", "x", "}", "EOF"
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    #[test]
+    fn borrowed_spans_preserve_normalization_locations_and_eof() {
+        let input = "  \\alpha  \\ \t\\verb|abc|é\u{0301}% comment\n~";
+        let mut spans = Lexer::new(input);
+        let expected = [
+            (" ", 0, 2),
+            ("\\alpha", 2, 8),
+            ("\\ ", 10, 13),
+            ("\\verb|abc|", 13, 23),
+            ("é\u{0301}", 23, 27),
+            ("~", 37, 38),
+        ];
+        for (text, start, end) in expected {
+            let span = spans.next_span();
+            assert_eq!(span.text, text);
+            assert_eq!(span.loc, SourceLocation { start, end });
+            assert!(!span.is_eof);
+        }
+        assert!(spans.next_span().is_eof);
     }
 }

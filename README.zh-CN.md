@@ -53,6 +53,10 @@ RaTeX 是同一个 KaTeX 兼容的数学引擎，但编译到一个可移植的 
 
 **物理单位** — `\pu` 支持符合 IUPAC 规范的数值+单位表达式。
 
+**居中否定关系** — `\centernot\implies`、`\centernot{\impliedby}` 和 `\centernot{\iff}` 将否定斜线放在整个参数的水平中心，并保留关系符间距（遵循 centernot 宏包语义）。
+
+**费曼斜杠记号** — 支持 `\slashed{p}`、`\slashed{\partial}` 及上下标、字体组合。
+
 **证明树** — 支持 bussproofs 风格的 `prooftree`，可渲染推理规则与相继式演算：
 
 ```latex
@@ -238,6 +242,7 @@ CLI 说明
 - `render-svg --stdout`：将 SVG 文档写到 stdout，而不是文件；状态信息写到 stderr。
 - `--help`：查看当前二进制支持的选项，以及当前构建是否启用了嵌入字体。
 - `--color` / `--background-color` 支持命名颜色（如 `black`、`red`、`teal`）、三位或六位十六进制（如 `#f00`、`#ff0000`）、以及 KaTeX / MathJax 风格的颜色模型写法（如 `[RGB]255,0,0`、`[rgb]1,0,0`、`[HTML]B22222`、`[gray]0.5`、`[cmyk]0,1,1,0`）。
+- `--padding <SIZE>`：设置 PNG 和 SVG 输出四周的基础空白边距。实际边距会随 `--dpr` 缩放。
 - `render-svg --office-compatible-colors`：将 SVG 颜色写成 `rgb(...)` 加 opacity 属性，而不是默认的 `rgba(...)`，用于不识别 SVG `rgba(...)` 的 Office 版本。
 - `ratex-render` 的 `--background-color transparent` 可输出透明背景 PNG。
 

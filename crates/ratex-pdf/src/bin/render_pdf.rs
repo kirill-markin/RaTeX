@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use ratex_pdf::{render_to_pdf, PdfOptions};
 use ratex_types::math_style::MathStyle;
@@ -121,6 +121,7 @@ fn pdf_formula(
 ) -> Result<Vec<u8>, String> {
     let ast = parse(expr).map_err(|e| format!("Parse error: {e}"))?;
     let lbox = layout(&ast, layout_opts);
+    validate_layout(&lbox)?;
     let display_list = to_display_list(&lbox);
     render_to_pdf(&display_list, pdf_opts).map_err(|e| format!("{e}"))
 }

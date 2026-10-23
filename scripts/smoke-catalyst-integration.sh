@@ -6,26 +6,32 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMOKE_DIR="$(mktemp -d)"
 trap 'rm -rf "$SMOKE_DIR"' EXIT
 
-# The published manifest stays pinned to its release; only this temporary package
-# consumes the just-built binary and the real Swift wrapper (including resources).
-mkdir -p "$SMOKE_DIR/RaTeXPackage/Sources" "$SMOKE_DIR/CatalystSmoke.xcodeproj"
-cp -R "$REPO_ROOT/platforms/ios/Sources/Ratex" "$SMOKE_DIR/RaTeXPackage/Sources/RaTeX"
-cp -R "$REPO_ROOT/platforms/ios/RaTeX.xcframework" "$SMOKE_DIR/RaTeXPackage/"
+# Preserve the real manifest and its source/resource paths. Only the binary
+# target location is overridden so release manifests also use the local build.
+mkdir -p "$SMOKE_DIR/RaTeXPackage/platforms/ios" "$SMOKE_DIR/CatalystSmoke.xcodeproj"
+cp -R "$REPO_ROOT/platforms/ios/Sources" "$SMOKE_DIR/RaTeXPackage/platforms/ios/"
+cp -R "$REPO_ROOT/platforms/ios/RaTeX.xcframework" "$SMOKE_DIR/RaTeXPackage/platforms/ios/"
 cp "$REPO_ROOT/platforms/ios/catalyst/CatalystSmoke.swift" "$SMOKE_DIR/"
-cat > "$SMOKE_DIR/RaTeXPackage/Package.swift" <<'SWIFT'
-// swift-tools-version: 5.9
-import PackageDescription
+python3 - "$REPO_ROOT/Package.swift" "$SMOKE_DIR/RaTeXPackage/Package.swift" <<'PY'
+from pathlib import Path
+import re
+import sys
 
-let package = Package(
-    name: "RaTeX",
-    platforms: [.iOS(.v14), .macOS(.v14)],
-    products: [.library(name: "RaTeX", targets: ["RaTeX"])],
-    targets: [
-        .binaryTarget(name: "RaTeXFFI", path: "RaTeX.xcframework"),
-        .target(name: "RaTeX", dependencies: ["RaTeXFFI"], resources: [.copy("Fonts")]),
-    ]
+source = Path(sys.argv[1]).read_text()
+pattern = (
+    r'(\.binaryTarget\(\s*name:\s*"RaTeXFFI",\s*)'
+    r'(?:path:\s*"[^"]*"|url:\s*"[^"]*",\s*checksum:\s*"[^"]*")'
+    r'(\s*\))'
 )
-SWIFT
+manifest, count = re.subn(
+    pattern,
+    lambda match: match[1] + 'path: "platforms/ios/RaTeX.xcframework"' + match[2],
+    source,
+)
+if count != 1:
+    raise SystemExit("Expected exactly one RaTeXFFI binary target in Package.swift.")
+Path(sys.argv[2]).write_text(manifest)
+PY
 
 # A bundled UIKit executable gives the real wrapper its Catalyst runtime and
 # exercises SwiftPM binary variant selection without an external project generator.

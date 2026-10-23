@@ -1,6 +1,6 @@
 //! RaTeX WASM bindings: parse LaTeX and return DisplayList as JSON for browser rendering.
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parse;
 use ratex_types::color::Color;
 use ratex_types::display_item::{DisplayItem, DisplayList};
@@ -95,6 +95,7 @@ fn render_latex_impl(
         options
     };
     let layout_box = layout(&nodes, &options);
+    validate_layout(&layout_box)?;
     let mut display_list = to_display_list(&layout_box);
     // serde_json's default f64 serializer errors on NaN/Infinity. Walk the
     // tree once in place and clamp non-finite values to 0 so we can call
@@ -302,5 +303,26 @@ mod tests {
 
         assert!(rgba_color(-0.1, 0.0, 0.0, 1.0).is_err());
         assert!(rgba_color(0.0, 0.0, 0.0, f64::NAN).is_err());
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod expansion_safety {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn macro_resource_error_reaches_javascript_without_trapping() {
+        let mut input = String::from(r"\edef\ma{xxxxxxxx}");
+        for (a, b) in ('a'..='r').zip('b'..='s') {
+            input += &format!("\\edef\\m{b}{{\\m{a}\\m{a}}}");
+        }
+        input += r"\ms";
+        let error = render_latex(&input, None, None).unwrap_err();
+        assert!(error
+            .as_string()
+            .unwrap()
+            .contains("Macro expansion resource limit exceeded"));
+        assert!(render_latex("x+1", None, None).is_ok());
     }
 }

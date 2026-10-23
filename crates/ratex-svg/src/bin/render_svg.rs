@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use ratex_svg::{render_to_svg_with_color_syntax, SvgColorSyntax, SvgOptions};
 use ratex_types::color::Color;
@@ -55,6 +55,13 @@ fn main() {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(40.0);
 
+    let padding = args
+        .iter()
+        .position(|a| a == "--padding")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(10.0);
+
     let color = args
         .iter()
         .position(|a| a == "--color")
@@ -80,7 +87,7 @@ fn main() {
     let dpr = device_pixel_ratio.clamp(0.01, 16.0) as f64;
     let svg_opts = SvgOptions {
         font_size: font_size * dpr,
-        padding: 10.0 * dpr,
+        padding: padding * dpr,
         stroke_width: 1.5 * dpr,
         embed_glyphs: true,
         font_dir,
@@ -162,6 +169,7 @@ fn svg_formula(
 ) -> Result<String, String> {
     let ast = parse(expr).map_err(|e| format!("Parse error: {e}"))?;
     let lbox = layout(&ast, layout_opts);
+    validate_layout(&lbox)?;
     let display_list = to_display_list(&lbox);
     Ok(render_to_svg_with_color_syntax(
         &display_list,
@@ -218,6 +226,7 @@ Options:
   --stdout                   Write SVGs to stdout instead of files
   --dpr <FACTOR>             Scale font size, padding, and stroke width [default: 1.0]
   --font-size <SIZE>         Base SVG font size in user units [default: 40.0]
+  --padding <SIZE>           Base padding on each side in user units [default: 10.0]
   --color <COLOR>            Formula color: named, #rgb, #rgba, #rrggbb, #rrggbbaa,
                              or [MODEL]value
                              [default: black]

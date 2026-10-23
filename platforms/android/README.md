@@ -7,7 +7,7 @@ minSdk 21, targetSdk 34.
 
 1. **Add dependency** — In your app's `build.gradle`:
    ```kotlin
-   implementation("io.github.erweixin:ratex-android:0.1.14")
+   implementation("io.github.erweixin:ratex-android:0.1.15")
    ```
 2. **Use** — Add `RaTeXView` in your layout and set LaTeX in code; fonts load automatically on first render.
    ```kotlin
@@ -18,7 +18,7 @@ minSdk 21, targetSdk 34.
 
 ## Local development (building from source)
 
-**Prerequisites:** NDK 26+, Rust + `cargo install cargo-ndk`, and targets:
+**Prerequisites:** NDK 26+, Python 3, Rust + `cargo install cargo-ndk`, and targets:
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 ```
@@ -35,6 +35,36 @@ include(":ratex-android")
 project(":ratex-android").projectDir = file("path/to/RaTeX/platforms/android")
 ```
 Then in your app: `implementation(project(":ratex-android"))`.
+
+## 16 KB page compatibility
+
+Source builds explicitly set both `max-page-size=16384` and
+`common-page-size=16384` when linking the 64-bit Android `ratex-ffi` library.
+This aligns LOAD segments and GNU_RELRO ends, including with NDK r27.
+The build script verifies both `arm64-v8a` and `x86_64` and fails on missing
+libraries or invalid alignment. This source fix does not change the already
+published 0.1.14 AAR, whose RELRO ends are not 16 KB aligned (issue #165).
+
+Verify a release AAR before publishing, or check a downloaded AAR:
+
+```bash
+(cd demo/android && ./gradlew :ratex-android:assembleRelease)
+python3 scripts/verify_android_elf.py platforms/android/build/outputs/aar/ratex-android-release.aar
+# Also accepts a jniLibs directory:
+python3 scripts/verify_android_elf.py platforms/android/src/main/jniLibs
+python3 -m unittest discover -s scripts -p 'test_verify_android_elf.py'
+```
+
+CI checks NDK r27 and r28c builds; Android, React Native, and Flutter releases
+verify their Android libraries before publishing. The Maven release also checks
+the assembled AAR. Keep RELRO enabled; checking LOAD alignment alone is insufficient.
+
+Applications must separately satisfy APK ZIP alignment (use AGP 8.5.1+ for
+uncompressed native libraries; the repository demo currently uses AGP 8.2.2).
+Run `zipalign -c -P 16 -v 4 app.apk`, then test library loading and formula
+rendering on both 4 KB and 16 KB devices. `adb shell getconf PAGE_SIZE` must
+return `16384` on the latter. See the
+[Android page-size guide](https://developer.android.com/guide/practices/page-sizes).
 
 ## Usage
 

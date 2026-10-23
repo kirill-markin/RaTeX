@@ -15,6 +15,7 @@ OUTPUT="$REPO_ROOT/platforms/ios/RaTeX.xcframework"
 BUILD_IOS=true
 BUILD_MACOS=true
 BUILD_CATALYST=true
+IOS_RUST_TOOLCHAIN="${RATEX_IOS_RUST_TOOLCHAIN:-nightly-2026-08-16}"
 # Controls missing-target behavior:
 # - auto (default): auto-install locally, fail in CI
 # - true: always auto-install
@@ -29,6 +30,14 @@ for arg in "$@"; do
 done
 
 LIBS=()
+
+build_ios_target() {
+  local target="$1"
+  cargo +"$IOS_RUST_TOOLCHAIN" build \
+      -Z build-std=std,panic_abort \
+      --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
+      --target "$target"
+}
 
 ensure_rust_target_installed() {
   local target="$1"
@@ -70,15 +79,9 @@ $target
 
 if $BUILD_IOS; then
   echo "==> Building ratex-ffi for iOS targets..."
-  ensure_rust_target_installed aarch64-apple-ios
-  ensure_rust_target_installed aarch64-apple-ios-sim
-  ensure_rust_target_installed x86_64-apple-ios
-  cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
-      --target aarch64-apple-ios
-  cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
-      --target aarch64-apple-ios-sim
-  cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
-      --target x86_64-apple-ios
+  build_ios_target aarch64-apple-ios
+  build_ios_target aarch64-apple-ios-sim
+  build_ios_target x86_64-apple-ios
 
   echo "==> Creating fat iOS simulator binary..."
   SIM_DIR=$(mktemp -d)
@@ -89,6 +92,11 @@ if $BUILD_IOS; then
 
   LIBS+=(-library "$REPO_ROOT/target/aarch64-apple-ios/release/libratex_ffi.a" -headers "$HEADER_DIR")
   LIBS+=(-library "$SIM_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
+
+  echo "==> Verifying iOS static libraries do not reference Rust's unwind personality..."
+  bash "$REPO_ROOT/scripts/verify-apple-static-libraries.sh" \
+      "$REPO_ROOT/target/aarch64-apple-ios/release/libratex_ffi.a" \
+      "$SIM_DIR/libratex_ffi.a"
 fi
 
 if $BUILD_MACOS; then
@@ -114,14 +122,11 @@ fi
 
 if $BUILD_CATALYST; then
   echo "==> Building ratex-ffi for Mac Catalyst targets..."
-  ensure_rust_target_installed aarch64-apple-ios-macabi
-  ensure_rust_target_installed x86_64-apple-ios-macabi
 
   CATALYST_SDK="$(xcrun --sdk macosx --show-sdk-path)"
   for target in aarch64-apple-ios-macabi x86_64-apple-ios-macabi; do
     SDKROOT="$CATALYST_SDK" IPHONEOS_DEPLOYMENT_TARGET=14.0 \
-      cargo build --release -p ratex-ffi --manifest-path "$REPO_ROOT/Cargo.toml" \
-      --target "$target"
+      build_ios_target "$target"
   done
 
   echo "==> Creating fat Mac Catalyst binary..."
@@ -132,6 +137,9 @@ if $BUILD_CATALYST; then
       -output "$CATALYST_DIR/libratex_ffi.a"
 
   LIBS+=(-library "$CATALYST_DIR/libratex_ffi.a" -headers "$HEADER_DIR")
+
+  echo "==> Verifying Mac Catalyst static library does not reference Rust's unwind personality..."
+  bash "$REPO_ROOT/scripts/verify-apple-static-libraries.sh" "$CATALYST_DIR/libratex_ffi.a"
 fi
 
 echo "==> Packaging XCFramework..."

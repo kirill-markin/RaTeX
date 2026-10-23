@@ -56,6 +56,13 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
 
+      - name: Assemble and verify release AAR
+        run: |
+          cd demo/android
+          ./gradlew :ratex-android:assembleRelease --no-daemon -PlibraryVersion=${{ steps.version.outputs.version }}
+          cd ../..
+          python3 scripts/verify_android_elf.py platforms/android/build/outputs/aar/ratex-android-release.aar
+
       - name: Publish to Maven Central
         # Central Portal 验证较慢，build service 轮询可能超时，但包已上传并触发 release，不影响实际发布
         continue-on-error: true

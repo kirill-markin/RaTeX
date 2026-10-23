@@ -1,4 +1,4 @@
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use ratex_layout::{layout, to_display_list, validate_layout, LayoutOptions};
 use ratex_parser::parser::parse;
 use std::io::{self, BufRead, Write};
 
@@ -16,8 +16,19 @@ fn main() {
             Ok(ast) => {
                 let options = LayoutOptions::default();
                 let lbox = layout(&ast, &options);
-                let display_list = to_display_list(&lbox);
+                if let Err(error) = validate_layout(&lbox) {
+                    writeln!(
+                        out,
+                        "{}",
+                        serde_json::json!({
+                            "error": true, "message": error, "input": expr,
+                        })
+                    )
+                    .expect("write");
+                    continue;
+                }
 
+                let display_list = to_display_list(&lbox);
                 let result = serde_json::json!({
                     "input": expr,
                     "box": {
