@@ -685,6 +685,7 @@ fn try_blit_raster_glyph(
     true
 }
 
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn raster_glyph_image_to_pixmap(img: &ttf_parser::RasterGlyphImage<'_>) -> Option<Pixmap> {
     use ttf_parser::RasterImageFormat;
     let w = u32::from(img.width);
