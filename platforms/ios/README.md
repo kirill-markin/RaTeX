@@ -125,9 +125,18 @@ bash platforms/ios/build-ios.sh
 
 ### Option A — Swift Package Manager (recommended)
 
-In Xcode: **File → Add Package Dependencies**, enter `https://github.com/erweixin/RaTeX` and select the `RaTeX` product.
+In Xcode: **File → Add Package Dependencies**, enter `https://github.com/kirill-markin/RaTeX` and select the `RaTeX` product. The committed manifest uses the existing `catalyst-binary-0.1.14-1` release until a separate binary release is published and pinned.
 
-**Local development** — Run `bash platforms/ios/build-ios.sh` first for iOS-only work, or `bash scripts/build-apple-xcframework.sh` for macOS or Mac Catalyst SPM consumers. Then point Xcode to the repo root via **File → Add Package Dependencies → Add Local…**.
+**Local development** — Run `bash platforms/ios/build-ios.sh` for iOS-only work, or `bash scripts/build-apple-xcframework.sh` for macOS or Mac Catalyst SPM consumers. The build scripts do not change the manifest. To consume the rebuilt FFI, temporarily replace the `RaTeXFFI` binary target's `url` and `checksum` in the root `Package.swift` with a local `path`:
+
+```swift
+.binaryTarget(
+    name: "RaTeXFFI",
+    path: "platforms/ios/RaTeX.xcframework"
+)
+```
+
+Then point Xcode to the repo root via **File → Add Package Dependencies → Add Local…**. Keep this local override uncommitted; the committed manifest must retain its published URL and checksum. Alternatively, use [manual integration](#option-b--manual) below with the rebuilt XCFramework.
 
 For a runnable macOS SPM integration check, see `demo/spm-macos`. For Catalyst, enable **Mac Catalyst** in the app target's supported destinations; `RaTeXView` uses UIKit and `RaTeXFormula` uses its UIKit SwiftUI bridge.
 
