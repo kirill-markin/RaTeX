@@ -70,6 +70,30 @@ jobs:
           npm ci
           npm test
 
+  website-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Install website dependencies
+        run: npm --prefix website ci
+      - name: Test the website image service
+        run: npm --prefix website test
+      - name: Build the website and verify bundled WASM
+        run: |
+          node tools/generate_website_formulas.mjs
+          npm --prefix website run build
+
   gtk-gobject-smoke:
     runs-on: ubuntu-latest
     steps:
