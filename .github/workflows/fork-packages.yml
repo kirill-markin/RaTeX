@@ -71,7 +71,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
       - name: Assemble AAR and generate dependency POM without publishing
         working-directory: demo/android
-        run: ./gradlew :ratex-android:assembleRelease :ratex-android:generatePomFileForReleasePublication --no-daemon -PlibraryVersion="$FORK_VERSION"
+        run: ./gradlew :ratex-android:assembleRelease :ratex-android:generatePomFileForMavenPublication --no-daemon -PlibraryVersion="$FORK_VERSION"
       - name: Record toolchains
         run: |
           mkdir -p out

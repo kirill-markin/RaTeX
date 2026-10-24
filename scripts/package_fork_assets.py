@@ -37,7 +37,7 @@ def run_recorded(command: list[str], directory: Path, log: Path) -> None:
 
 def package_android(output: Path, version: str) -> None:
     android = ROOT / "platforms/android"
-    pom_path = android / "build/publications/release/pom-default.xml"
+    pom_path = android / "build/publications/maven/pom-default.xml"
     pom = ET.parse(pom_path).getroot()
     if pom.findtext("m:version", namespaces=POM_NS) != version:
         raise ValueError(f"Generated Android POM version must be {version}: {pom_path}")
