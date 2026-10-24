@@ -11,8 +11,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "RaTeXFFI",
-            url: "https://github.com/kirill-markin/RaTeX/releases/download/catalyst-binary-0.1.14-1/RaTeX.xcframework.zip",
-            checksum: "37deca19f15dff2c330dea5c7b06c4a337462902f510fbea141f5dc30e5ed80a"
+            url: "https://github.com/kirill-markin/RaTeX/releases/download/catalyst-binary-0.1.15-1/RaTeX.xcframework.zip",
+            checksum: "cf7eb8f7623a2baedc6710e7829184571698bbebb1f5878d3522c7b6c7b457f5"
         ),
 
         .target(

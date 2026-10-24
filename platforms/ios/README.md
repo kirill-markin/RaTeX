@@ -125,7 +125,7 @@ bash platforms/ios/build-ios.sh
 
 ### Option A — Swift Package Manager (recommended)
 
-In Xcode: **File → Add Package Dependencies**, enter `https://github.com/kirill-markin/RaTeX` and select the `RaTeX` product. The committed manifest uses the existing `catalyst-binary-0.1.14-1` release until a separate binary release is published and pinned.
+In Xcode: **File → Add Package Dependencies**, enter `https://github.com/kirill-markin/RaTeX` and select the `RaTeX` product. The committed manifest uses the `catalyst-binary-0.1.15-1` binary release.
 
 **Local development** — Run `bash platforms/ios/build-ios.sh` for iOS-only work, or `bash scripts/build-apple-xcframework.sh` for macOS or Mac Catalyst SPM consumers. The build scripts do not change the manifest. To consume the rebuilt FFI, temporarily replace the `RaTeXFFI` binary target's `url` and `checksum` in the root `Package.swift` with a local `path`:
 
