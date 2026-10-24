@@ -1,0 +1,141 @@
+name: Fork Android and web packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork package version
+        required: true
+        default: 0.1.15-fork.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORK_VERSION: ${{ inputs.version }}
+  FORK_RELEASE_TAG: fork-packages-0.1.15-1
+  FORK_ASSET_DIR: ${{ github.workspace }}/out/fork-packages
+  CARGO_TERM_COLOR: always
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require manual main build and the declared fork version
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch || { echo 'Manual dispatch required'; exit 1; }
+          test "$GITHUB_REF" = refs/heads/main || { echo 'Dispatch on main only'; exit 1; }
+          test "$GITHUB_REPOSITORY" = kirill-markin/RaTeX || { echo 'Wrong fork repository'; exit 1; }
+          test "$FORK_VERSION" = 0.1.15-fork.1 || { echo 'Unsupported fork version'; exit 1; }
+          test "$FORK_VERSION" = "$(cat VERSION)-fork.1" || { echo 'Fork version does not match VERSION'; exit 1; }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fork-packages-r28c
+      - name: Install build tools
+        run: |
+          cargo install cargo-ndk --locked
+          cargo install wasm-pack --locked
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28c
+      - name: Build and test the real web package
+        working-directory: platforms/web
+        run: |
+          npm ci
+          npm test
+      - name: Build and verify three Android ABIs
+        run: bash platforms/android/build-android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+      - name: Assemble AAR and generate dependency POM without publishing
+        working-directory: demo/android
+        run: ./gradlew :ratex-android:assembleRelease :ratex-android:generatePomFileForReleasePublication --no-daemon -PlibraryVersion="$FORK_VERSION"
+      - name: Record toolchains
+        run: |
+          mkdir -p out
+          {
+            node --version
+            npm --version
+            java -version
+            rustc -Vv
+            cargo --version
+            cargo ndk --version
+            wasm-pack --version
+            cat "${{ steps.ndk.outputs.ndk-path }}/source.properties"
+            demo/android/gradlew --version --no-daemon
+          } > out/fork-toolchains.txt 2>&1
+      - name: Package assets, verify final ELF and test the extracted npm package
+        run: python3 scripts/package_fork_assets.py
+      - name: Resolve AAR and transitives through the generated Ivy descriptor
+        run: |
+          consumer="$RUNNER_TEMP/fork-ivy-consumer"
+          mkdir "$consumer"
+          printf 'rootProject.name = "fork-package-consumer"\n' > "$consumer/settings.gradle"
+          cat > "$consumer/build.gradle" <<'GRADLE'
+          import groovy.json.JsonSlurper
+          configurations { forkRuntime }
+          repositories {
+              ivy {
+                  url = uri(System.getenv('FORK_ASSET_DIR'))
+                  patternLayout {
+                      ivy '[module]-[revision].ivy.xml'
+                      artifact '[artifact]-[revision].[ext]'
+                  }
+                  metadataSources { ivyDescriptor() }
+                  content { includeGroup 'io.github.kirill-markin' }
+              }
+              google()
+              mavenCentral()
+          }
+          dependencies {
+              forkRuntime "io.github.kirill-markin:ratex-android:${System.getenv('FORK_VERSION')}"
+          }
+          tasks.register('verifyForkPackage') {
+              doLast {
+                  def config = configurations.forkRuntime
+                  def resolved = config.incoming.resolutionResult.allComponents.collect { it.moduleVersion?.toString() }.toSet()
+                  def assets = file(System.getenv('FORK_ASSET_DIR'))
+                  def expected = new JsonSlurper().parse(new File(assets, 'evidence/android-dependencies.json'))
+                  expected.each { coordinate ->
+                      if (!resolved.contains(coordinate)) throw new GradleException("Missing Ivy transitive: $coordinate; resolved: $resolved")
+                  }
+                  def artifacts = config.resolvedConfiguration.resolvedArtifacts
+                  def aar = artifacts.find { it.moduleVersion.id.group == 'io.github.kirill-markin' && it.name == 'ratex-android' }
+                  def original = new File(assets, "ratex-android-${System.getenv('FORK_VERSION')}.aar")
+                  if (aar == null || aar.type != 'aar' || !Arrays.equals(aar.file.bytes, original.bytes)) {
+                      throw new GradleException('Ivy did not resolve the exact fork AAR')
+                  }
+                  artifacts.each { if (it.file.length() == 0) throw new GradleException("Empty artifact: $it") }
+                  println "Resolved fork AAR and dependencies: $resolved"
+              }
+          }
+          GRADLE
+          demo/android/gradlew --project-dir "$consumer" verifyForkPackage --no-daemon | tee "$FORK_ASSET_DIR/evidence/ivy-consumer.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-packages-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/fork-packages/
+          if-no-files-found: error
+          retention-days: 30
